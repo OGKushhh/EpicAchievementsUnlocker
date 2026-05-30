@@ -583,3 +583,59 @@ The developers are not responsible for any consequences of using this software.
 **Version**: ScreamAPI v1.13.0 + EOS SDK v1.17.3 Headers
 **Date**: March 31, 2026
 **Status**: Production Ready ✅
+
+---
+
+## 1.17.1.3 → 1.18.1.2 (May 2026)
+
+### Summary
+
+Header-only SDK bump. No breaking changes in any API used by ScreamAPI. All `_API_LATEST` constants remained identical. The only new structural addition in 1.18 is the Localized Presence feature, which ScreamAPI does not use.
+
+### SDK headers
+
+- All files in `ScreamAPI/src/eos-sdk/` replaced with SDK 1.18.1.2 `Include/` contents
+- `eos_version.h`: `EOS_MINOR_VERSION` 17 → 18, `EOS_HOTFIX_VERSION` 3 → 2
+- `eos_presence_localized_types.h`: **new file**, no references in ScreamAPI source
+
+### `eos_compat.cpp` changes
+
+#### Added: 1.18.0 probe to `detectSDKVersion()`
+
+```cpp
+// Added above the existing 1.17.0 probe:
+if (GetProcAddress(eosDLL, "EOS_PresenceModification_SetTemplateId")) {
+    Logger::info("[COMPAT] Found EOS_PresenceModification_SetTemplateId - SDK is v1.18.0+");
+    gameSDKVersion.major = 1;
+    gameSDKVersion.minor = 18;
+    gameSDKVersion.patch = 0;
+    gameSDKVersion.detected = true;
+    return true;
+}
+```
+
+#### Added: `"LocalizedPresence"` to `isFeatureAvailable()`
+
+```cpp
+if (strcmp(featureName, "LocalizedPresence") == 0) {
+    return isVersionOrNewer(1, 18, 0);
+}
+```
+
+#### Added: Localized Presence line to `logCompatibilityInfo()`
+
+```cpp
+Logger::info("[COMPAT]   Localized Presence:      %s", isFeatureAvailable("LocalizedPresence") ? "YES" : "NO");
+```
+
+### No source changes in
+
+`eos_hooks.cpp`, `achievement_manager.cpp`, `ScreamAPI.cpp`, `util.cpp`, `Overlay.cpp` — untouched.
+
+### Compatibility
+
+| Game SDK | Status |
+|---|---|
+| 1.13.x – 1.17.x | ✅ Same as before |
+| 1.18.x | ✅ Now fully supported (native headers + correct probe) |
+| 1.19.x+ | ⚠️ Will need header update; check if any `_API_LATEST` bumped |

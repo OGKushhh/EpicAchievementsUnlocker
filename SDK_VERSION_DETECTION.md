@@ -500,3 +500,55 @@ But this is **not recommended** because:
 - Version detection is not that complex
 
 **Recommendation**: Implement runtime version detection. It's the most robust solution.
+
+---
+
+## 1.18.x support (added May 2026)
+
+### New probe added to `detectSDKVersion()`
+
+`EOS_PresenceModification_SetTemplateId` was added as a probe for 1.18.0+ games. It is the function backing the new Localized Presence feature introduced in 1.18 and is absent from all 1.17 and earlier DLLs. It sits at the top of the probe chain, above the existing `EOS_Connect_CopyIdToken` (1.17.0+) entry.
+
+Updated probe order:
+
+| Export present | Minimum version inferred |
+|---|---|
+| `EOS_PresenceModification_SetTemplateId` | 1.18.0 |
+| `EOS_Connect_CopyIdToken` | 1.17.0 |
+| `EOS_Connect_Logout` | 1.16.0 |
+| `EOS_Platform_GetDesktopCrossplayStatus` | 1.15.0 |
+| `EOS_Ecom_QueryOwnershipBySandboxIds` | 1.14.0 |
+| *(none of the above)* | 1.13.0 |
+
+### New feature: `"LocalizedPresence"`
+
+`isFeatureAvailable("LocalizedPresence")` returns `true` for games on SDK 1.18.0+. It is logged in the compatibility block and can be used to gate any future Localized Presence forwarding logic.
+
+### Updated compatibility block output (1.18 game)
+
+```
+[INFO]  [COMPAT] ========================================
+[INFO]  [COMPAT] EOS SDK Compatibility Information
+[INFO]  [COMPAT] ========================================
+[INFO]  [COMPAT] ScreamAPI SDK Version: v1.18.1.2 (headers)
+[INFO]  [COMPAT] Game SDK Version:      v1.18.1.2
+[INFO]  [COMPAT]
+[INFO]  [COMPAT] Feature Availability:
+[INFO]  [COMPAT]   Connect Logout:          YES
+[INFO]  [COMPAT]   Desktop Crossplay:       YES
+[INFO]  [COMPAT]   External Auth Providers: YES
+[INFO]  [COMPAT]   Hidden Achievements:     YES
+[INFO]  [COMPAT]   RTC Options:             YES
+[INFO]  [COMPAT]   Tick Budget:             YES
+[INFO]  [COMPAT]   Integrated Platform:     YES
+[INFO]  [COMPAT]   Task Network Timeout:    YES
+[INFO]  [COMPAT]   Localized Presence:      YES
+[INFO]  [COMPAT]
+[INFO]  [COMPAT] API Versions:
+[INFO]  [COMPAT]   PlatformOptions:         14
+[INFO]  [COMPAT]   QueryPlayerAchievements: 2
+[INFO]  [COMPAT]   CopyAchievementByIndex:  2
+[INFO]  [COMPAT]
+[INFO]  [COMPAT] Status: COMPATIBLE (Game >= ScreamAPI)
+[INFO]  [COMPAT] ========================================
+```

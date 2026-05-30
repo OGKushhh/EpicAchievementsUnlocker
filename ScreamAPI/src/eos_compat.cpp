@@ -41,6 +41,16 @@ bool detectSDKVersion(HMODULE eosDLL) {
 	// Method 2: Probe for version-specific functions
 	Logger::warn("[COMPAT] EOS_GetVersion not available, probing for version-specific functions...");
 
+	// v1.18.0+ has EOS_PresenceModification_SetTemplateId (Localized Presence)
+	if (GetProcAddress(eosDLL, "EOS_PresenceModification_SetTemplateId")) {
+		Logger::info("[COMPAT] Found EOS_PresenceModification_SetTemplateId - SDK is v1.18.0+");
+		gameSDKVersion.major = 1;
+		gameSDKVersion.minor = 18;
+		gameSDKVersion.patch = 0;
+		gameSDKVersion.detected = true;
+		return true;
+	}
+
 	// v1.17.0+ has EOS_Connect_CopyIdToken
 	if (GetProcAddress(eosDLL, "EOS_Connect_CopyIdToken")) {
 		Logger::info("[COMPAT] Found EOS_Connect_CopyIdToken - SDK is v1.17.0+");
@@ -191,6 +201,11 @@ bool isFeatureAvailable(const char* featureName) {
 		return isVersionOrNewer(1, 17, 0);
 	}
 
+	// Localized Presence (v1.18.0+)
+	if (strcmp(featureName, "LocalizedPresence") == 0) {
+		return isVersionOrNewer(1, 18, 0);
+	}
+
 	return false;
 }
 
@@ -228,6 +243,7 @@ void logCompatibilityInfo() {
 	Logger::info("[COMPAT]   Tick Budget:             %s", isFeatureAvailable("TickBudget") ? "YES" : "NO");
 	Logger::info("[COMPAT]   Integrated Platform:     %s", isFeatureAvailable("IntegratedPlatform") ? "YES" : "NO");
 	Logger::info("[COMPAT]   Task Network Timeout:    %s", isFeatureAvailable("TaskNetworkTimeout") ? "YES" : "NO");
+	Logger::info("[COMPAT]   Localized Presence:      %s", isFeatureAvailable("LocalizedPresence") ? "YES" : "NO");
 
 	Logger::info("[COMPAT] ");
 	Logger::info("[COMPAT] API Versions:");

@@ -465,3 +465,59 @@ struct EOS_Achievements_QueryPlayerAchievementsOptions { /* ... */ };
 ---
 
 **Note**: The fact that your overlay loads and renders correctly means the DLL injection and hooking works. The problem is purely with the EOS SDK API compatibility layer. Focus on structure alignment first, then platform init.
+
+---
+
+## 1.17.1.3 → 1.18.1.2 (May 2026)
+
+### What changed in the headers
+
+| File | Change |
+|---|---|
+| `eos_version.h` | Minor 17 → 18, Patch 1 → 1, Hotfix 3 → 2 |
+| `eos_presence_localized_types.h` | **New file** — Localized Presence feature (unused by ScreamAPI directly) |
+| All other headers | Identical structure layout, identical `_API_LATEST` constants |
+
+### API version constants — before and after
+
+Every constant ScreamAPI actually uses stayed the same:
+
+| Constant | 1.17.1.3 | 1.18.1.2 |
+|---|---|---|
+| `EOS_ACHIEVEMENTS_QUERYDEFINITIONS_API_LATEST` | 3 | 3 |
+| `EOS_ACHIEVEMENTS_QUERYPLAYERACHIEVEMENTS_API_LATEST` | 2 | 2 |
+| `EOS_ACHIEVEMENTS_UNLOCKACHIEVEMENTS_API_LATEST` | 1 | 1 |
+| `EOS_CONNECT_LOGIN_API_LATEST` | 2 | 2 |
+| `EOS_INITIALIZE_API_LATEST` | 4 | 4 |
+
+### Source code changes required
+
+**None in ScreamAPI source.** No structs used by `eos_hooks.cpp`, `achievement_manager.cpp`, or `eos_compat.cpp` changed shape.
+
+The only changes were:
+
+- `eos_compat.cpp` — added `EOS_PresenceModification_SetTemplateId` probe to the fallback detection chain (identifies 1.18.0+ games that don't export `EOS_GetVersion`), added `"LocalizedPresence"` to `isFeatureAvailable()`, and added the corresponding log line in `logCompatibilityInfo()`
+- Docs updated
+
+The `EOS_Compat` runtime detection layer automatically logs `1.18.1.2` for games that ship with the new runtime DLL.
+
+### Upgrade procedure
+
+1. Delete the contents of `ScreamAPI/src/eos-sdk/`
+2. Copy all files from the SDK download's `SDK/Include/` folder into `ScreamAPI/src/eos-sdk/`
+3. Rebuild — no compiler errors expected
+
+### How to get the SDK without an organization account
+
+You do **not** need an organization account. A personal Epic Games account is sufficient:
+
+1. Sign in at <https://dev.epicgames.com/portal>
+2. Create any product (name doesn't matter)
+3. Go to **Product Settings → SDK & Release Notes**
+4. Download the Windows SDK zip
+
+The `Include/` folder inside is all you need — the rest of the 0.5 GB is platform libs, binaries, and samples.
+
+---
+
+*See `UPGRADE_CHANGELOG_v1.17.3.md` for the full 1.13.0 → 1.17.1.3 history.*
