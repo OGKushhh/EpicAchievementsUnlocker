@@ -134,8 +134,6 @@ void AccumulateMouseWheel(float delta) {
 }
 
 HRESULT WINAPI hookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
-    static bool hotkeyStarted = false;
-
     if (!bInit) {
         Logger::ovrly("hookedPresent: Initializing overlay");
         if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&gD3D11Device))) {
@@ -172,11 +170,7 @@ HRESULT WINAPI hookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         }
         else {
             Logger::error("hookedPresent: Failed to get D3D11 device");
-            if (!hotkeyStarted) {
-                hotkeyStarted = true;
-                Logger::ovrly("D3D11 unavailable - starting global hotkey (Ctrl+Shift+U)");
-                HotkeyHandler::Start();
-            }
+            // Hotkeys already started in Init() — nothing extra needed here
             bInit = true;
             return originalPresent(pSwapChain, SyncInterval, Flags);
         }
@@ -225,13 +219,9 @@ void Init(HMODULE hMod, Achievements* pAchievements, UnlockAchievementFunction* 
     achievements = pAchievements;
     unlockAchievement = fnUnlockAchievement;
 
-    // Start global hotkeys unconditionally (works for all games: D3D11, OpenGL, Vulkan, Java)
-    static bool hotkeysStarted = false;
-    if (!hotkeysStarted && Config::EnableOverlay()) {
-        HotkeyHandler::Start();
-        hotkeysStarted = true;
-        Logger::ovrly("Global hotkeys started (Ctrl+Shift+U / Ctrl+Shift+L)");
-    }
+    // Hotkeys always start regardless of EnableOverlay — the INI flag controls
+    // the ImGui window only, not the Ctrl+Shift+U / Ctrl+Shift+L functionality.
+    HotkeyHandler::Start(); // internally guarded: safe to call multiple times
 
     Logger::ovrly("Overlay::Init: Starting async initialization");
     static auto initJob = std::async(std::launch::async, []() {

@@ -12,12 +12,11 @@
 namespace HotkeyHandler {
 
     static HWND hwndHotkey = nullptr;
-    static const UINT HOTKEY_ID_UNLOCK_ALL = 1;
+    static const UINT HOTKEY_ID_UNLOCK_ALL  = 1;
     static const UINT HOTKEY_ID_UNLOCK_LIST = 2;
     static std::atomic<bool> keepRunning{false};
     static std::thread messageThread;
 
-    // Helper: trim whitespace
     static std::string trim(const std::string& s) {
         size_t start = s.find_first_not_of(" \t\r\n");
         if (start == std::string::npos) return "";
@@ -25,7 +24,6 @@ namespace HotkeyHandler {
         return s.substr(start, end - start + 1);
     }
 
-    // Unlock all achievements
     static void UnlockAllAchievements() {
         if (Overlay::achievements) {
             int count = 0;
@@ -33,7 +31,7 @@ namespace HotkeyHandler {
                 if (ach.UnlockState == UnlockState::Locked) {
                     Overlay::unlockAchievement(&ach);
                     count++;
-                    Logger::info("[HOTKEY] Unlocking all: %s", ach.AchievementId);
+                    Logger::info("[HOTKEY] Unlocking: %s", ach.AchievementId);
                 }
             }
             Logger::info("[HOTKEY] Unlocked %d achievements.", count);
@@ -42,7 +40,6 @@ namespace HotkeyHandler {
         }
     }
 
-    // Unlock from file (unlock_list.txt in game folder)
     static void UnlockFromFile() {
         char path[MAX_PATH];
         GetModuleFileNameA(NULL, path, MAX_PATH);
@@ -75,7 +72,6 @@ namespace HotkeyHandler {
         Logger::info("[HOTKEY] Unlocked %d achievements from %s", count, listFile.c_str());
     }
 
-    // Window procedure for the hidden message window
     LRESULT CALLBACK HotkeyWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (msg == WM_HOTKEY) {
             if (wParam == HOTKEY_ID_UNLOCK_ALL) {
@@ -89,75 +85,77 @@ namespace HotkeyHandler {
         return DefWindowProc(hwnd, msg, wParam, lParam);
     }
 
-    // Message loop – runs in its own thread
+    // FIX (Bug 3): The window, RegisterHotKey, and GetMessage must all live on the
+    // same thread. We do all three here inside the message loop thread itself.
     static void MessageLoop() {
-        MSG msg;
-        while (keepRunning) {
-            // Use GetMessage (blocks) instead of PeekMessage to reduce CPU usage
-            if (GetMessage(&msg, NULL, 0, 0)) {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
+        // Register window class
+        WNDCLASSEX wc = {};
+        wc.cbSize        = sizeof(WNDCLASSEX);
+        wc.lpfnWndProc   = HotkeyWndProc;
+        wc.hInstance     = GetModuleHandle(NULL);
+        wc.lpszClassName = L"ScreamAPI_HotkeyWindow";
+        if (!RegisterClassEx(&wc)) {
+            DWORD err = GetLastError();
+            // ERROR_CLASS_ALREADY_EXISTS (1410) is fine if Start() was somehow called twice
+            if (err != ERROR_CLASS_ALREADY_EXISTS) {
+                Logger::error("[HOTKEY] Failed to register window class (error %d)", err);
+                keepRunning = false;
+                return;
             }
         }
-        Logger::info("Hotkey message loop exiting.");
+
+        hwndHotkey = CreateWindowEx(0, wc.lpszClassName, L"HotkeyWindow", 0,
+                                    0, 0, 0, 0, HWND_MESSAGE, NULL, wc.hInstance, NULL);
+        if (!hwndHotkey) {
+            Logger::error("[HOTKEY] Failed to create message window (error %d)", GetLastError());
+            keepRunning = false;
+            return;
+        }
+
+        // RegisterHotKey on THIS thread — WM_HOTKEY will arrive in this thread's queue
+        if (!RegisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_ALL, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'U'))
+            Logger::error("[HOTKEY] Failed to register Ctrl+Shift+U (error %d)", GetLastError());
+        else
+            Logger::info("[HOTKEY] Ctrl+Shift+U registered.");
+
+        if (!RegisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_LIST, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'L'))
+            Logger::error("[HOTKEY] Failed to register Ctrl+Shift+L (error %d)", GetLastError());
+        else
+            Logger::info("[HOTKEY] Ctrl+Shift+L registered.");
+
+        MSG msg;
+        while (keepRunning) {
+            // GetMessage blocks until a message arrives for THIS thread
+            BOOL ret = GetMessage(&msg, NULL, 0, 0);
+            if (ret == 0 || ret == -1) break;   // WM_QUIT or error
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+
+        UnregisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_ALL);
+        UnregisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_LIST);
+        DestroyWindow(hwndHotkey);
+        hwndHotkey = nullptr;
+        Logger::info("[HOTKEY] Message loop exited.");
     }
 
     void Start() {
-        if (keepRunning) {
-            Logger::info("Hotkey handler already running.");
+        // FIX (Bug 2): guard with keepRunning so double-calls are silently ignored
+        if (keepRunning.exchange(true)) {
+            Logger::info("[HOTKEY] Already running, ignoring duplicate Start().");
             return;
         }
-
-        // Register window class
-        WNDCLASSEX wc = {0};
-        wc.cbSize = sizeof(WNDCLASSEX);
-        wc.lpfnWndProc = HotkeyWndProc;
-        wc.hInstance = GetModuleHandle(NULL);
-        wc.lpszClassName = L"ScreamAPI_HotkeyWindow";
-        if (!RegisterClassEx(&wc)) {
-            Logger::error("Failed to register hotkey window class (error %d)", GetLastError());
-            return;
-        }
-
-        // Create hidden message-only window
-        hwndHotkey = CreateWindowEx(0, wc.lpszClassName, L"HotkeyWindow", 0, 0, 0, 0, 0,
-                                    HWND_MESSAGE, NULL, wc.hInstance, NULL);
-        if (!hwndHotkey) {
-            Logger::error("Failed to create hotkey window (error %d)", GetLastError());
-            return;
-        }
-
-        // Register hotkeys
-        if (!RegisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_ALL, MOD_CONTROL | MOD_SHIFT, 'U')) {
-            Logger::error("Failed to register hotkey Ctrl+Shift+U (error %d)", GetLastError());
-        } else {
-            Logger::info("Global hotkey Ctrl+Shift+U registered successfully.");
-        }
-
-        if (!RegisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_LIST, MOD_CONTROL | MOD_SHIFT, 'L')) {
-            Logger::error("Failed to register hotkey Ctrl+Shift+L (error %d)", GetLastError());
-        } else {
-            Logger::info("Global hotkey Ctrl+Shift+L registered successfully.");
-        }
-
-        // Start message loop thread
-        keepRunning = true;
         messageThread = std::thread(MessageLoop);
         messageThread.detach();
-        Logger::info("Hotkey message loop thread started.");
+        Logger::info("[HOTKEY] Message loop thread started.");
     }
 
     void Stop() {
         keepRunning = false;
         if (hwndHotkey) {
-            // Post a quit message to wake up GetMessage
             PostMessage(hwndHotkey, WM_QUIT, 0, 0);
-            UnregisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_ALL);
-            UnregisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_LIST);
-            DestroyWindow(hwndHotkey);
-            hwndHotkey = nullptr;
         }
-        // The message thread will exit when keepRunning is false and GetMessage returns false
-        Logger::info("Hotkey handler stopped.");
+        Logger::info("[HOTKEY] Stopped.");
     }
+
 }
