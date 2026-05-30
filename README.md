@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/EOS%20SDK-1.17.1.3-blue" alt="EOS SDK">
+  <img src="https://img.shields.io/badge/EOS%20SDK-1.18.1.2-blue" alt="EOS SDK">
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey" alt="Platform">
