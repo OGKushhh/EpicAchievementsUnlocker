@@ -1,161 +1,159 @@
 #include "pch.h"
 #include "HotkeyHandler.h"
 #include "achievement_manager.h"
+#include "achievement_manager_ui.h"
 #include "Overlay.h"
 #include <fstream>
 #include <string>
-#include <algorithm>
-#include <cctype>
 #include <atomic>
 #include <thread>
 
 namespace HotkeyHandler {
 
-    static HWND hwndHotkey = nullptr;
-    static const UINT HOTKEY_ID_UNLOCK_ALL  = 1;
-    static const UINT HOTKEY_ID_UNLOCK_LIST = 2;
-    static std::atomic<bool> keepRunning{false};
-    static std::thread messageThread;
+static HWND hwndHotkey = nullptr;
+static const UINT HOTKEY_ID_UNLOCK_ALL  = 1;
+static const UINT HOTKEY_ID_UNLOCK_LIST = 2;
+static std::atomic<bool> keepRunning{false};
+static std::thread messageThread;
 
-    static std::string trim(const std::string& s) {
-        size_t start = s.find_first_not_of(" \t\r\n");
-        if (start == std::string::npos) return "";
-        size_t end = s.find_last_not_of(" \t\r\n");
-        return s.substr(start, end - start + 1);
+static std::string trim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    return s.substr(a, s.find_last_not_of(" \t\r\n") - a + 1);
+}
+
+static void UnlockAll() {
+    if (!Overlay::achievements) { Logger::error("[HOTKEY] achievements NULL"); return; }
+    int n = 0;
+    for (auto& ach : *Overlay::achievements)
+        if (ach.UnlockState == UnlockState::Locked) { Overlay::unlockAchievement(&ach); n++; }
+    Logger::info("[HOTKEY] Unlocked %d achievements.", n);
+}
+
+static void UnlockFromFile() {
+    char path[MAX_PATH];
+    GetModuleFileNameA(NULL, path, MAX_PATH);
+    std::string dir = std::string(path).substr(0, std::string(path).find_last_of("\\/"));
+    std::ifstream file(dir + "\\unlock_list.txt");
+    if (!file.is_open()) { Logger::error("[HOTKEY] Could not open unlock_list.txt"); return; }
+    std::string line; int n = 0;
+    while (std::getline(file, line)) {
+        std::string id = trim(line);
+        if (id.empty()) continue;
+        AchievementManager::findAchievement(id.c_str(), [&](Overlay_Achievement& ach) {
+            if (ach.UnlockState == UnlockState::Locked) { Overlay::unlockAchievement(&ach); n++; }
+        });
     }
+    Logger::info("[HOTKEY] Unlocked %d achievements from file.", n);
+}
 
-    static void UnlockAllAchievements() {
-        if (Overlay::achievements) {
-            int count = 0;
-            for (auto& ach : *Overlay::achievements) {
-                if (ach.UnlockState == UnlockState::Locked) {
-                    Overlay::unlockAchievement(&ach);
-                    count++;
-                    Logger::info("[HOTKEY] Unlocking: %s", ach.AchievementId);
-                }
-            }
-            Logger::info("[HOTKEY] Unlocked %d achievements.", count);
-        } else {
-            Logger::error("[HOTKEY] Achievements list not available.");
+// ── Raw keyboard handler ──────────────────────────────────────────────────────
+// RIDEV_INPUTSINK delivers WM_INPUT to our message window even when it is not
+// the foreground window — completely bypassing the game's message loop.
+// This is the only reliable way to intercept Shift+F5 in an injected DLL.
+static bool sShiftDown = false;
+static bool sF5Down    = false;
+
+static void HandleRawKeyboard(RAWKEYBOARD& kb) {
+    bool down = !(kb.Flags & RI_KEY_BREAK);
+    USHORT vk = kb.VKey;
+    if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) sShiftDown = down;
+    if (vk == VK_F5) {
+        if (down && !sF5Down && sShiftDown) {
+            Overlay::bShowInitPopup         = false;
+            Overlay::bShowAchievementManager = !Overlay::bShowAchievementManager;
+            Logger::info("[HOTKEY] Shift+F5 (raw) — overlay %s",
+                         Overlay::bShowAchievementManager ? "shown" : "hidden");
+            if (Overlay::bShowAchievementManager)
+                AchievementManagerUI::RequestFocus();
         }
+        sF5Down = down;
     }
+}
 
-    static void UnlockFromFile() {
-        char path[MAX_PATH];
-        GetModuleFileNameA(NULL, path, MAX_PATH);
-        std::string exePath(path);
-        std::string dir = exePath.substr(0, exePath.find_last_of("\\/"));
-        std::string listFile = dir + "\\unlock_list.txt";
-
-        std::ifstream file(listFile);
-        if (!file.is_open()) {
-            Logger::error("[HOTKEY] Could not open %s", listFile.c_str());
-            return;
-        }
-
-        std::string line;
-        int count = 0;
-        while (std::getline(file, line)) {
-            std::string id = trim(line);
-            if (id.empty()) continue;
-            AchievementManager::findAchievement(id.c_str(), [&](Overlay_Achievement& ach) {
-                if (ach.UnlockState == UnlockState::Locked) {
-                    Overlay::unlockAchievement(&ach);
-                    count++;
-                    Logger::info("[HOTKEY] Unlocking specific: %s", ach.AchievementId);
-                } else {
-                    Logger::info("[HOTKEY] Already unlocked: %s", ach.AchievementId);
-                }
-            });
-        }
-        file.close();
-        Logger::info("[HOTKEY] Unlocked %d achievements from %s", count, listFile.c_str());
+LRESULT CALLBACK HotkeyWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_HOTKEY) {
+        if      (wParam == HOTKEY_ID_UNLOCK_ALL)  UnlockAll();
+        else if (wParam == HOTKEY_ID_UNLOCK_LIST) UnlockFromFile();
+        return 0;
     }
-
-    LRESULT CALLBACK HotkeyWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        if (msg == WM_HOTKEY) {
-            if (wParam == HOTKEY_ID_UNLOCK_ALL) {
-                UnlockAllAchievements();
-                return 0;
-            } else if (wParam == HOTKEY_ID_UNLOCK_LIST) {
-                UnlockFromFile();
-                return 0;
-            }
+    if (msg == WM_INPUT) {
+        UINT size = 0;
+        GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
+        if (size > 0) {
+            RAWINPUT* raw = (RAWINPUT*)_alloca(size);
+            if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, raw, &size, sizeof(RAWINPUTHEADER)) == size)
+                if (raw->header.dwType == RIM_TYPEKEYBOARD)
+                    HandleRawKeyboard(raw->data.keyboard);
         }
         return DefWindowProc(hwnd, msg, wParam, lParam);
     }
-
-    // FIX (Bug 3): The window, RegisterHotKey, and GetMessage must all live on the
-    // same thread. We do all three here inside the message loop thread itself.
-    static void MessageLoop() {
-        // Register window class
-        WNDCLASSEX wc = {};
-        wc.cbSize        = sizeof(WNDCLASSEX);
-        wc.lpfnWndProc   = HotkeyWndProc;
-        wc.hInstance     = GetModuleHandle(NULL);
-        wc.lpszClassName = L"ScreamAPI_HotkeyWindow";
-        if (!RegisterClassEx(&wc)) {
-            DWORD err = GetLastError();
-            // ERROR_CLASS_ALREADY_EXISTS (1410) is fine if Start() was somehow called twice
-            if (err != ERROR_CLASS_ALREADY_EXISTS) {
-                Logger::error("[HOTKEY] Failed to register window class (error %d)", err);
-                keepRunning = false;
-                return;
-            }
-        }
-
-        hwndHotkey = CreateWindowEx(0, wc.lpszClassName, L"HotkeyWindow", 0,
-                                    0, 0, 0, 0, HWND_MESSAGE, NULL, wc.hInstance, NULL);
-        if (!hwndHotkey) {
-            Logger::error("[HOTKEY] Failed to create message window (error %d)", GetLastError());
-            keepRunning = false;
-            return;
-        }
-
-        // RegisterHotKey on THIS thread — WM_HOTKEY will arrive in this thread's queue
-        if (!RegisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_ALL, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'U'))
-            Logger::error("[HOTKEY] Failed to register Ctrl+Shift+U (error %d)", GetLastError());
-        else
-            Logger::info("[HOTKEY] Ctrl+Shift+U registered.");
-
-        if (!RegisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_LIST, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'L'))
-            Logger::error("[HOTKEY] Failed to register Ctrl+Shift+L (error %d)", GetLastError());
-        else
-            Logger::info("[HOTKEY] Ctrl+Shift+L registered.");
-
-        MSG msg;
-        while (keepRunning) {
-            // GetMessage blocks until a message arrives for THIS thread
-            BOOL ret = GetMessage(&msg, NULL, 0, 0);
-            if (ret == 0 || ret == -1) break;   // WM_QUIT or error
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-
-        UnregisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_ALL);
-        UnregisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_LIST);
-        DestroyWindow(hwndHotkey);
-        hwndHotkey = nullptr;
-        Logger::info("[HOTKEY] Message loop exited.");
-    }
-
-    void Start() {
-        // FIX (Bug 2): guard with keepRunning so double-calls are silently ignored
-        if (keepRunning.exchange(true)) {
-            Logger::info("[HOTKEY] Already running, ignoring duplicate Start().");
-            return;
-        }
-        messageThread = std::thread(MessageLoop);
-        messageThread.detach();
-        Logger::info("[HOTKEY] Message loop thread started.");
-    }
-
-    void Stop() {
-        keepRunning = false;
-        if (hwndHotkey) {
-            PostMessage(hwndHotkey, WM_QUIT, 0, 0);
-        }
-        Logger::info("[HOTKEY] Stopped.");
-    }
-
+    return DefWindowProc(hwnd, msg, wParam, lParam);
 }
+
+static void MessageLoop() {
+    WNDCLASSEX wc{ sizeof(wc) };
+    wc.lpfnWndProc   = HotkeyWndProc;
+    wc.hInstance     = GetModuleHandle(NULL);
+    wc.lpszClassName = L"ScreamAPI_HotkeyWindow";
+    if (!RegisterClassEx(&wc)) {
+        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            Logger::error("[HOTKEY] RegisterClassEx failed"); keepRunning = false; return;
+        }
+    }
+
+    hwndHotkey = CreateWindowEx(0, wc.lpszClassName, L"HotkeyWindow", 0,
+                                0, 0, 0, 0, HWND_MESSAGE, NULL, wc.hInstance, NULL);
+    if (!hwndHotkey) {
+        Logger::error("[HOTKEY] CreateWindowEx failed"); keepRunning = false; return;
+    }
+
+    // Ctrl+Shift+U / Ctrl+Shift+L via RegisterHotKey (system-level, reliable)
+    if (RegisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_ALL,  MOD_CONTROL|MOD_SHIFT|MOD_NOREPEAT, 'U'))
+        Logger::info("[HOTKEY] Ctrl+Shift+U registered.");
+    else Logger::error("[HOTKEY] Ctrl+Shift+U failed (%d)", GetLastError());
+
+    if (RegisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_LIST, MOD_CONTROL|MOD_SHIFT|MOD_NOREPEAT, 'L'))
+        Logger::info("[HOTKEY] Ctrl+Shift+L registered.");
+    else Logger::error("[HOTKEY] Ctrl+Shift+L failed (%d)", GetLastError());
+
+    // Shift+F5 via raw input with RIDEV_INPUTSINK
+    RAWINPUTDEVICE rid{};
+    rid.usUsagePage = 0x01; // HID_USAGE_PAGE_GENERIC
+    rid.usUsage     = 0x06; // HID_USAGE_GENERIC_KEYBOARD
+    rid.dwFlags     = RIDEV_INPUTSINK;
+    rid.hwndTarget  = hwndHotkey;
+    if (RegisterRawInputDevices(&rid, 1, sizeof(rid)))
+        Logger::info("[HOTKEY] Raw keyboard input registered (RIDEV_INPUTSINK).");
+    else Logger::error("[HOTKEY] RegisterRawInputDevices failed (%d)", GetLastError());
+
+    MSG msg;
+    while (keepRunning) {
+        BOOL ret = GetMessage(&msg, NULL, 0, 0);
+        if (ret == 0 || ret == -1) break;
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    UnregisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_ALL);
+    UnregisterHotKey(hwndHotkey, HOTKEY_ID_UNLOCK_LIST);
+    RAWINPUTDEVICE ridRemove{ 0x01, 0x06, RIDEV_REMOVE, nullptr };
+    RegisterRawInputDevices(&ridRemove, 1, sizeof(ridRemove));
+    DestroyWindow(hwndHotkey);
+    hwndHotkey = nullptr;
+    Logger::info("[HOTKEY] Stopped.");
+}
+
+void Start() {
+    if (keepRunning.exchange(true)) return;
+    messageThread = std::thread(MessageLoop);
+    messageThread.detach();
+    Logger::info("[HOTKEY] Message loop thread started.");
+}
+
+void Stop() {
+    keepRunning = false;
+    if (hwndHotkey) PostMessage(hwndHotkey, WM_QUIT, 0, 0);
+}
+
+} // namespace HotkeyHandler

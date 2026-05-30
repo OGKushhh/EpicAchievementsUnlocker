@@ -4,13 +4,14 @@
 
 namespace Overlay {
 
-extern ID3D11Device* gD3D11Device;
-extern ID3D11DeviceContext* gContext;
-extern Achievements* achievements;
+extern ID3D11Device*          gD3D11Device;
+extern ID3D11DeviceContext*   gContext;
+extern Achievements*          achievements;
 extern UnlockAchievementFunction* unlockAchievement;
 
-// Global flag for the startup popup (used by AchievementManagerUI)
+// UI state — read by both DX11 render path and D3D12Hook
 extern bool bShowInitPopup;
+extern bool bShowAchievementManager;
 
 void Init(HMODULE hMod, Achievements* pAchievements, UnlockAchievementFunction* pUnlockAchievement);
 void Shutdown();

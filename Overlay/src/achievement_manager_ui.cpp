@@ -91,7 +91,7 @@ static void FitTextToWindow(ImFont* font, const ImVec4 color, const char* text) 
     ImGui::PushFont(font);
     ImVec2 sz = ImGui::CalcTextSize(text);
     ImGui::PopFont();
-    float canvasWidth = ImGui::GetWindowContentRegionWidth();
+    float canvasWidth = ( ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x );
     float scale = canvasWidth / sz.x;
     if (scale > 1.0f) scale = 1.0f;
     font->Scale = scale;
@@ -155,9 +155,8 @@ static void UpdateFilteredIndices() {
 // ----------------------------------------------------------------------------
 // ImGui initialisation
 // ----------------------------------------------------------------------------
-void InitImGui(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* context) {
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+// Shared style + font init — called by both DX11 and DX12 paths
+void InitImGuiStyle() {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
 
@@ -185,22 +184,22 @@ void InitImGui(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* context) {
     style.Colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.25f, 0.25f, 0.30f, 0.80f);
     style.Colors[ImGuiCol_Separator]     = ImVec4(0.25f, 0.25f, 0.30f, 0.80f);
 
-    style.ChildRounding   = 8.0f;
-    style.FrameRounding   = 6.0f;
-    style.PopupRounding   = 8.0f;
-    style.ScrollbarSize   = 10.0f;
-    style.ScrollbarRounding = 6.0f;
-    style.GrabRounding    = 4.0f;
-    style.WindowRounding  = 10.0f;
-    style.WindowPadding   = ImVec2(12, 12);
-    style.ItemSpacing     = ImVec2(8, 8);
+    style.ChildRounding    = 8.0f;
+    style.FrameRounding    = 6.0f;
+    style.PopupRounding    = 8.0f;
+    style.ScrollbarSize    = 10.0f;
+    style.ScrollbarRounding= 6.0f;
+    style.GrabRounding     = 4.0f;
+    style.WindowRounding   = 10.0f;
+    style.WindowPadding    = ImVec2(12, 12);
+    style.ItemSpacing      = ImVec2(8, 8);
     style.ItemInnerSpacing = ImVec2(6, 6);
 
     io.Fonts->Clear();
     ImFontConfig fontConfig;
     fontConfig.OversampleH = 2;
     fontConfig.OversampleV = 2;
-    fontConfig.PixelSnapH = true;
+    fontConfig.PixelSnapH  = true;
     static const ImWchar ranges[] = { 0x0020, 0xFFFF, 0 };
 
     bool fontLoaded = false;
@@ -223,18 +222,22 @@ void InitImGui(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* context) {
         }
     }
     if (!fontLoaded) {
-        regularFont = io.Fonts->AddFontDefault();
-        achievementNameFont = regularFont;
-        descriptionFont = regularFont;
-        instructionFont = regularFont;
-        bigFont = regularFont;
+        regularFont = achievementNameFont = descriptionFont =
+            instructionFont = bigFont = io.Fonts->AddFontDefault();
         Logger::ovrly("Using default font");
     }
+    initialized = true;
+    Logger::ovrly("AchievementManagerUI style+fonts initialized");
+}
 
+// DX11 path
+void InitImGui(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* context) {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    InitImGuiStyle();
     ImGui_ImplWin32_Init(hWnd);
     ImGui_ImplDX11_Init(device, context);
-    initialized = true;
-    Logger::ovrly("AchievementManagerUI initialised");
+    Logger::ovrly("AchievementManagerUI initialized (DX11)");
 }
 
 // ----------------------------------------------------------------------------
