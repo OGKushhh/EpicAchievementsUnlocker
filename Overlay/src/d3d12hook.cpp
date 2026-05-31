@@ -6,6 +6,11 @@
 // allocator+list per frame, own fence for GPU sync.
 //
 // Calls AchievementManagerUI::Draw* for the actual overlay content.
+//
+// FIX: If gCommandQueue is still NULL after 300 frames (~5s at 60fps), the
+// game loaded d3d12.dll but actually renders with DX11 (e.g. Dying Light).
+// In that case we initialize a DX11 ImGui overlay directly from the already-
+// hooked Present, without needing a separate kiero hook.
 
 #include "pch.h"
 #include "d3d12hook.h"
@@ -16,14 +21,16 @@
 
 #include <dxgi1_4.h>
 #include <d3d12.h>
+#include <d3d11.h>
 #pragma comment(lib, "d3d12.lib")
+#pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
 // ── ImGui backends ────────────────────────────────────────────────────────────
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_win32.h"
 #include "imgui/imgui_impl_dx12.h"
-extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, UINT, LPARAM);
+#include "imgui/imgui_impl_dx11.h"
 
 namespace D3D12Hook {
 
@@ -36,7 +43,7 @@ static PresentFn             oPresent             = nullptr;
 static ExecuteCommandListsFn oExecuteCommandLists = nullptr;
 static ResizeBuffersFn       oResizeBuffers        = nullptr;
 
-// ── Globals ───────────────────────────────────────────────────────────────────
+// ── DX12 globals ──────────────────────────────────────────────────────────────
 static ID3D12Device*              gDevice        = nullptr;
 static ID3D12CommandQueue*        gCommandQueue  = nullptr;
 static ID3D12DescriptorHeap*      gHeapRTV       = nullptr;
@@ -59,11 +66,14 @@ static bool gInitialized      = false;
 static bool gShutdown         = false;
 static bool gAfterFirstPresent= false;
 
+// ── DX11 fallback globals (used when game has d3d12.dll but renders DX11) ────
+static bool                    gFallbackAttempted  = false;
+static bool                    gFallbackToDX11     = false;
+static bool                    gFallbackInited     = false;
+static ID3D11RenderTargetView* gFbRTV              = nullptr;
+
 // ── SRV descriptor allocator callbacks (required by ImGui 1.92+) ─────────────
 static void SrvAlloc(ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE* cpu, D3D12_GPU_DESCRIPTOR_HANDLE* gpu) {
-    // We pre-allocate a single SRV heap with BufferCount+1 slots.
-    // Slot 0 is reserved for ImGui's font texture.
-    // This callback is called once during ImGui_ImplDX12_Init.
     *cpu = gHeapSRV->GetCPUDescriptorHandleForHeapStart();
     *gpu = gHeapSRV->GetGPUDescriptorHandleForHeapStart();
 }
@@ -97,14 +107,27 @@ static void ReleaseResources() {
     gBufferCount = 0;
 }
 
+// ── Release DX11 fallback resources ──────────────────────────────────────────
+static void ReleaseFallbackResources() {
+    if (gFallbackInited && ImGui::GetCurrentContext()) {
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        gFallbackInited = false;
+    }
+    if (gFbRTV) { gFbRTV->Release(); gFbRTV = nullptr; }
+    if (Overlay::gContext)     { Overlay::gContext->Release();     Overlay::gContext     = nullptr; }
+    if (Overlay::gD3D11Device) { Overlay::gD3D11Device->Release(); Overlay::gD3D11Device = nullptr; }
+}
+
 // ── Hooked ExecuteCommandLists — captures the real command queue ──────────────
 void STDMETHODCALLTYPE HookedExecuteCommandLists(
     ID3D12CommandQueue* pQueue, UINT count, ID3D12CommandList* const* lists)
 {
-    // Capture the first DIRECT queue we see after the first Present call.
-    // This is guaranteed to be the game's main render queue.
     if (!gCommandQueue && gAfterFirstPresent) {
         D3D12_COMMAND_QUEUE_DESC desc = pQueue->GetDesc();
+        Logger::ovrly("[DX12] ECL called — queue type=%d priority=%d (DIRECT=0,COMPUTE=1,COPY=2)",
+                      (int)desc.Type, (int)desc.Priority);
         if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
             pQueue->AddRef();
             gCommandQueue = pQueue;
@@ -114,12 +137,11 @@ void STDMETHODCALLTYPE HookedExecuteCommandLists(
     oExecuteCommandLists(pQueue, count, lists);
 }
 
-// ── Per-frame render helper ───────────────────────────────────────────────────
+// ── Per-frame DX12 render helper ─────────────────────────────────────────────
 static void RenderFrame(IDXGISwapChain* pSwapChain) {
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
 
-    // Safety: ensure DisplaySize is valid even in exclusive fullscreen
     {
         ImGuiIO& io = ImGui::GetIO();
         if (io.DisplaySize.x <= 0.f || io.DisplaySize.y <= 0.f) {
@@ -132,7 +154,6 @@ static void RenderFrame(IDXGISwapChain* pSwapChain) {
 
     ImGui::NewFrame();
 
-    // Mouse input (same approach as DX11 path)
     {
         ImGuiIO& io = ImGui::GetIO();
         POINT pt{};
@@ -150,7 +171,6 @@ static void RenderFrame(IDXGISwapChain* pSwapChain) {
 
     ImGui::Render();
 
-    // Get current back buffer index
     IDXGISwapChain3* sc3 = nullptr;
     pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3));
     UINT frameIdx = sc3 ? sc3->GetCurrentBackBufferIndex() : 0;
@@ -158,13 +178,11 @@ static void RenderFrame(IDXGISwapChain* pSwapChain) {
 
     FrameCtx& ctx = gFrames[frameIdx];
 
-    // Wait for GPU to finish with previous use of this frame's allocator
     if (gFence->GetCompletedValue() < gFenceValue) {
         gFence->SetEventOnCompletion(gFenceValue, gFenceEvent);
         WaitForSingleObject(gFenceEvent, 2000);
     }
 
-    // Reset and record
     ctx.allocator->Reset();
     if (!gCommandList) {
         gDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -173,7 +191,6 @@ static void RenderFrame(IDXGISwapChain* pSwapChain) {
     }
     gCommandList->Reset(ctx.allocator, nullptr);
 
-    // Transition PRESENT → RENDER_TARGET
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource   = ctx.renderTarget;
@@ -187,7 +204,6 @@ static void RenderFrame(IDXGISwapChain* pSwapChain) {
 
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), gCommandList);
 
-    // Transition RENDER_TARGET → PRESENT
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PRESENT;
     gCommandList->ResourceBarrier(1, &barrier);
@@ -202,9 +218,83 @@ static void RenderFrame(IDXGISwapChain* pSwapChain) {
 HRESULT WINAPI HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     gAfterFirstPresent = true;
 
-    if (!gCommandQueue)
-        return oPresent(pSwapChain, SyncInterval, Flags);
+    if (!gCommandQueue) {
+        static int missedFrames = 0;
+        if (++missedFrames % 60 == 0)
+            Logger::ovrly("[DX12] Present called but gCommandQueue still NULL (frame %d)", missedFrames);
 
+        // ── DX11 fallback ─────────────────────────────────────────────────────
+        // After ~5 seconds with no DIRECT queue, this game loaded d3d12.dll but
+        // actually renders with DX11 (common with some launchers / middleware).
+        // We detect this by trying to QueryInterface a DX11 device from the
+        // swap chain, then stand up the DX11 ImGui backend in-place.
+        if (missedFrames >= 300 && !gFallbackAttempted) {
+            gFallbackAttempted = true;
+            ID3D11Device* d3d11 = nullptr;
+            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&d3d11))) {
+                Logger::ovrly("[DX12->DX11] CommandQueue never appeared — game is DX11. Switching to DX11 overlay.");
+                Overlay::gD3D11Device = d3d11;
+                d3d11->GetImmediateContext(&Overlay::gContext);
+                gFallbackToDX11 = true;
+            } else {
+                Logger::error("[DX12->DX11] Not a DX11 game either — overlay disabled.");
+            }
+        }
+
+        // ── First-time DX11 fallback init ─────────────────────────────────────
+        if (gFallbackToDX11 && !gFallbackInited && Overlay::gD3D11Device) {
+            DXGI_SWAP_CHAIN_DESC sd{};
+            pSwapChain->GetDesc(&sd);
+            Overlay::gWindow = sd.OutputWindow;
+
+            ID3D11Texture2D* pBB = nullptr;
+            if (SUCCEEDED(pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBB))) {
+                Overlay::gD3D11Device->CreateRenderTargetView(pBB, nullptr, &gFbRTV);
+                pBB->Release();
+            }
+
+            IMGUI_CHECKVERSION();
+            ImGui::CreateContext();
+            AchievementManagerUI::InitImGuiStyle();
+            ImGui_ImplWin32_Init(Overlay::gWindow);
+            ImGui_ImplDX11_Init(Overlay::gD3D11Device, Overlay::gContext);
+
+            // Subclass the window so hotkeys and mouse input work
+            Overlay::originalWindowProc = (WNDPROC)SetWindowLongPtr(
+                Overlay::gWindow, GWLP_WNDPROC, (LONG_PTR)Overlay::WindowProc);
+
+            Loader::AsyncLoadIcons();
+            gFallbackInited = true;
+            Logger::ovrly("[DX12->DX11] DX11 overlay initialized via fallback");
+        }
+
+        // ── DX11 fallback render ──────────────────────────────────────────────
+        if (gFallbackInited && gFbRTV && !gShutdown) {
+            ImGui_ImplDX11_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            ImGui::NewFrame();
+            {
+                ImGuiIO& io = ImGui::GetIO();
+                POINT pt{};
+                GetCursorPos(&pt);
+                ScreenToClient(Overlay::gWindow, &pt);
+                io.MousePos        = { (float)pt.x, (float)pt.y };
+                io.MouseDown[0]    = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+                io.MouseDown[1]    = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+                io.MouseDown[2]    = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+                io.MouseDrawCursor = Overlay::bShowAchievementManager;
+            }
+            if (Overlay::bShowInitPopup)          AchievementManagerUI::DrawInitPopup();
+            if (Overlay::bShowAchievementManager) AchievementManagerUI::DrawAchievementList();
+            ImGui::Render();
+            Overlay::gContext->OMSetRenderTargets(1, &gFbRTV, nullptr);
+            ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        }
+
+        return oPresent(pSwapChain, SyncInterval, Flags);
+    }
+
+    // ── Normal DX12 path ─────────────────────────────────────────────────────
     if (!gInitialized) {
         Logger::ovrly("[DX12] Initializing ImGui on first Present");
 
@@ -220,7 +310,6 @@ HRESULT WINAPI HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         Logger::ovrly("[DX12] BufferCount=%u %ux%u window=%p",
                       gBufferCount, sd.BufferDesc.Width, sd.BufferDesc.Height, gWindow);
 
-        // RTV heap
         D3D12_DESCRIPTOR_HEAP_DESC hd{};
         hd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         hd.NumDescriptors = gBufferCount;
@@ -228,15 +317,13 @@ HRESULT WINAPI HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
             Logger::error("[DX12] CreateDescriptorHeap RTV failed"); return oPresent(pSwapChain, SyncInterval, Flags);
         }
 
-        // SRV heap — slot 0 for ImGui font texture, slots 1+ for icon textures
         hd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        hd.NumDescriptors = 64; // enough for font + all achievement icons
+        hd.NumDescriptors = 64;
         hd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (FAILED(gDevice->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&gHeapSRV)))) {
             Logger::error("[DX12] CreateDescriptorHeap SRV failed"); return oPresent(pSwapChain, SyncInterval, Flags);
         }
 
-        // Per-frame allocators + RTVs
         gFrames = new FrameCtx[gBufferCount]{};
         UINT rtvStride = gDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = gHeapRTV->GetCPUDescriptorHandleForHeapStart();
@@ -249,19 +336,13 @@ HRESULT WINAPI HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
             rtvHandle.ptr += rtvStride;
         }
 
-        // Fence
         gDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gFence));
         gFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
-        // ImGui context + style
         ImGui::CreateContext();
         AchievementManagerUI::InitImGuiStyle();
-
-        // Win32 backend
         ImGui_ImplWin32_Init(gWindow);
 
-        // DX12 backend — use new InitInfo struct with CommandQueue (avoids
-        // the internal temp-queue font upload race that plagued old backends)
         ImGui_ImplDX12_InitInfo dx12info{};
         dx12info.Device            = gDevice;
         dx12info.CommandQueue      = gCommandQueue;
@@ -283,19 +364,26 @@ HRESULT WINAPI HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     return oPresent(pSwapChain, SyncInterval, Flags);
 }
 
-// ── Hooked ResizeBuffers — tear down and re-init on resolution change ─────────
+// ── Hooked ResizeBuffers ──────────────────────────────────────────────────────
 HRESULT WINAPI HookedResizeBuffers(IDXGISwapChain* pSwapChain,
     UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT Flags)
 {
     Logger::ovrly("[DX12] ResizeBuffers %ux%u", Width, Height);
-    ReleaseResources();
+    if (gFallbackInited) {
+        // Tear down DX11 fallback RTV; re-init happens next Present
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        if (gFbRTV) { gFbRTV->Release(); gFbRTV = nullptr; }
+        gFallbackInited = false;
+    } else {
+        ReleaseResources();
+    }
     return oResizeBuffers(pSwapChain, BufferCount, Width, Height, Format, Flags);
 }
 
-// ── Vtable theft — grab Present/ExecuteCommandLists addresses ─────────────────
+// ── Vtable theft ──────────────────────────────────────────────────────────────
 static bool GrabVtablePointers(void** outPresent, void** outECL, void** outResize) {
-    // Create a minimal dummy D3D12 device + swapchain just to read vtable slots.
-    // This window is created and destroyed immediately after.
     WNDCLASSEX wc{ sizeof(wc) };
     wc.lpfnWndProc   = DefWindowProc;
     wc.hInstance     = GetModuleHandle(nullptr);
@@ -312,17 +400,13 @@ static bool GrabVtablePointers(void** outPresent, void** outECL, void** outResiz
 
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) goto cleanup;
 
-    // Use the warp adapter to avoid touching any real GPU
     {
         IDXGIAdapter* adapter = nullptr;
         factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter));
         D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
         if (adapter) adapter->Release();
     }
-    if (!device) {
-        // Fallback: use default adapter
-        D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
-    }
+    if (!device) D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
     if (!device) goto cleanup;
 
     {
@@ -344,13 +428,11 @@ static bool GrabVtablePointers(void** outPresent, void** outECL, void** outResiz
     }
     if (!sc) goto cleanup;
 
-    // vtable layout: Present=8, ResizeBuffers=13, ExecuteCommandLists on queue
     {
         void** scVtbl   = *reinterpret_cast<void***>(sc);
         *outPresent     = scVtbl[8];
         *outResize      = scVtbl[13];
 
-        // Need a queue vtable too — get one from GetDevice on the swap chain
         ID3D12Device* dev2 = nullptr;
         sc->GetDevice(IID_PPV_ARGS(&dev2));
         D3D12_COMMAND_QUEUE_DESC cqd{ D3D12_COMMAND_LIST_TYPE_DIRECT };
@@ -358,7 +440,7 @@ static bool GrabVtablePointers(void** outPresent, void** outECL, void** outResiz
         if (dev2) { dev2->CreateCommandQueue(&cqd, IID_PPV_ARGS(&q)); dev2->Release(); }
         if (q) {
             void** qVtbl = *reinterpret_cast<void***>(q);
-            *outECL = qVtbl[10]; // ExecuteCommandLists is slot 10 in ID3D12CommandQueue
+            *outECL = qVtbl[10];
             q->Release();
             ok = true;
         }
@@ -409,13 +491,19 @@ void Init() {
 
 void Shutdown() {
     gShutdown = true;
-    // Wait for GPU to finish
-    if (gCommandQueue && gFence && gFenceEvent) {
-        gCommandQueue->Signal(gFence, ++gFenceValue);
-        gFence->SetEventOnCompletion(gFenceValue, gFenceEvent);
-        WaitForSingleObject(gFenceEvent, 2000);
+    if (gFallbackInited) {
+        ReleaseFallbackResources();
+        if (Overlay::originalWindowProc)
+            SetWindowLongPtr(Overlay::gWindow, GWLP_WNDPROC, (LONG_PTR)Overlay::originalWindowProc);
+    } else {
+        // Wait for GPU to finish before releasing DX12 resources
+        if (gCommandQueue && gFence && gFenceEvent) {
+            gCommandQueue->Signal(gFence, ++gFenceValue);
+            gFence->SetEventOnCompletion(gFenceValue, gFenceEvent);
+            WaitForSingleObject(gFenceEvent, 2000);
+        }
+        ReleaseResources();
     }
-    ReleaseResources();
     if (oPresent)             MH_DisableHook(reinterpret_cast<void*>(oPresent));
     if (oExecuteCommandLists) MH_DisableHook(reinterpret_cast<void*>(oExecuteCommandLists));
     if (oResizeBuffers)       MH_DisableHook(reinterpret_cast<void*>(oResizeBuffers));

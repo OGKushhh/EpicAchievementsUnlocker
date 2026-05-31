@@ -54,17 +54,6 @@ static int s_lastFilterMode = -1;
 static bool s_cacheValid = false;
 
 // ----------------------------------------------------------------------------
-// Helper: case‑insensitive substring
-// ----------------------------------------------------------------------------
-static bool containsIgnoreCase(const std::string& haystack, const std::string& needle) {
-    if (needle.empty()) return true;
-    auto it = std::search(haystack.begin(), haystack.end(),
-        needle.begin(), needle.end(),
-        [](char ch1, char ch2) { return std::toupper(ch1) == std::toupper(ch2); });
-    return it != haystack.end();
-}
-
-// ----------------------------------------------------------------------------
 // Helper: copy text to clipboard
 // ----------------------------------------------------------------------------
 static void CopyToClipboard(const char* text) {
@@ -86,12 +75,13 @@ static void CopyToClipboard(const char* text) {
 
 // ----------------------------------------------------------------------------
 // Helper: centred text with scaling
+// FIX: replaced deprecated GetWindowContentRegionMax/Min with GetContentRegionAvail()
 // ----------------------------------------------------------------------------
 static void FitTextToWindow(ImFont* font, const ImVec4 color, const char* text) {
     ImGui::PushFont(font);
     ImVec2 sz = ImGui::CalcTextSize(text);
     ImGui::PopFont();
-    float canvasWidth = ( ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x );
+    float canvasWidth = ImGui::GetContentRegionAvail().x;
     float scale = canvasWidth / sz.x;
     if (scale > 1.0f) scale = 1.0f;
     font->Scale = scale;
@@ -137,7 +127,7 @@ static void UpdateFilteredIndices() {
             const auto& ach = achievements->at(i);
             if (filterMode == 1 && ach.UnlockState != UnlockState::Locked) continue;
             if (filterMode == 2 && ach.UnlockState != UnlockState::Unlocked) continue;
-            if (filterMode == 3 && !ach.IsHidden) continue;   // Hidden filter
+            if (filterMode == 3 && !ach.IsHidden) continue;
             if (!searchLower.empty()) {
                 std::string name = ach.UnlockedDisplayName;
                 std::string desc = ach.UnlockedDescription;
@@ -328,26 +318,23 @@ void DrawAchievementList() {
     ImGui::PushFont(bigFont);
     float heartWidth = ImGui::CalcTextSize(heartSymbol).x;
     float titleWidth = ImGui::CalcTextSize(titleText).x;
-    float totalWidth = heartWidth * 2 + titleWidth + 10.0f; // 5px spacing each side
+    float totalWidth = heartWidth * 2 + titleWidth + 10.0f;
     ImGui::PopFont();
 
     float windowWidth = ImGui::GetWindowWidth();
     float startX = (windowWidth - totalWidth) * 0.5f;
     ImGui::SetCursorPosX(startX);
 
-    // Left heart (red)
     ImGui::PushFont(bigFont);
     ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.3f, 1.0f), "%s", heartSymbol);
     ImGui::PopFont();
     ImGui::SameLine(0.0f, 5.0f);
 
-    // Title text (white, extra large)
     ImGui::PushFont(bigFont);
     ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", titleText);
     ImGui::PopFont();
     ImGui::SameLine(0.0f, 5.0f);
 
-    // Right heart (red)
     ImGui::PushFont(bigFont);
     ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.3f, 1.0f), "%s", heartSymbol);
     ImGui::PopFont();
@@ -495,13 +482,15 @@ void DrawAchievementList() {
                 ImGui::BeginGroup();
                 ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + textWidth);
 
+                // FIX: added %s format specifier — achievement names/descriptions
+                // can contain '%' characters which would crash without it
                 ImGui::PushFont(achievementNameFont);
-                ImGui::TextColored(ImVec4(1, 1, 1, 1), achievement.UnlockedDisplayName);
+                ImGui::TextColored(ImVec4(1, 1, 1, 1), "%s", achievement.UnlockedDisplayName);
                 ImGui::PopFont();
 
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.90f, 1.0f));
                 ImGui::PushFont(descriptionFont);
-                ImGui::TextWrapped(achievement.UnlockedDescription);
+                ImGui::TextWrapped("%s", achievement.UnlockedDescription);
                 ImGui::PopFont();
                 ImGui::PopStyleColor();
 
@@ -550,7 +539,11 @@ void DrawAchievementList() {
 
                 ImGui::PopID();
             }
+            // FIX: Dummy() after SetCursorScreenPos so ImGui correctly registers
+            // the child window's content height (fixes the Dear ImGui red warning
+            // "Code uses SetCursorPos to extend window boundaries").
             ImGui::SetCursorScreenPos(ImVec2(startPos.x, startPos.y + (endIdx - startIdx) * rowHeight));
+            ImGui::Dummy(ImVec2(0, 0));
         }
     }
     ImGui::EndChild();
