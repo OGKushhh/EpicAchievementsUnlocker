@@ -86,6 +86,13 @@ LRESULT WINAPI WindowProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
     }
 
     if (bShowAchievementManager) {
+        // Always forward scroll directly — WM_MOUSEWHEEL doesn't go through
+        // the pointer translation block so it must be caught explicitly.
+        if (uMsg == WM_MOUSEWHEEL || uMsg == WM_MOUSEHWHEEL) {
+            ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
+            return 0;
+        }
+
         UINT translatedMsg = uMsg;
         switch (uMsg) {
         case WM_POINTERDOWN:   translatedMsg = WM_LBUTTONDOWN; break;
