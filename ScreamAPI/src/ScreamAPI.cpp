@@ -6,6 +6,7 @@
 #include "achievement_manager.h"
 #include "eos_compat.h"
 #include "eos_hooks.h"
+#include "PipeServer.h"
 #include "eos-sdk/eos_init.h"
 #include "eos-sdk/eos_types.h"
 #include <future>
@@ -208,6 +209,7 @@ namespace ScreamAPI
     void destroy() {
         Logger::info("Game requested to shutdown the EOS SDK");
 
+        PipeServer::Stop();
         EOS_Hooks::ShutdownHooks();
 
         if (Config::EnableOverlay()) {

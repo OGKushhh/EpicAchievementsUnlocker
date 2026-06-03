@@ -3,6 +3,7 @@
 #include "ScreamAPI.h"
 #include "util.h"
 #include "eos-sdk/eos_achievements.h"
+#include "PipeServer.h"
 #include "Overlay.h"
 #include <future>
 #include <atomic>
@@ -132,6 +133,7 @@ static void EOS_CALL OnAchievementsUnlockedV2(const EOS_Achievements_OnAchieveme
     findAchievement(Data->AchievementId, [](Overlay_Achievement& achievement) {
         achievement.UnlockState = UnlockState::Unlocked;
     });
+    PipeServer::NotifyUnlock(Data->AchievementId);
 }
 
 static void EOS_CALL OnAchievementsUnlocked(const EOS_Achievements_OnAchievementsUnlockedCallbackInfo* Data) {
@@ -139,6 +141,7 @@ static void EOS_CALL OnAchievementsUnlocked(const EOS_Achievements_OnAchievement
         findAchievement(Data->AchievementIds[i], [](Overlay_Achievement& achievement) {
             achievement.UnlockState = UnlockState::Unlocked;
         });
+        PipeServer::NotifyUnlock(Data->AchievementIds[i]);
     }
 }
 
@@ -188,6 +191,7 @@ void EOS_CALL queryPlayerAchievementsComplete(const EOS_Achievements_OnQueryPlay
 
     playerAchievementsQueried = true;
     Logger::debug("[ACH] Player achievements query succeeded");
+    PipeServer::Start(); // achievements list is now complete — open pipe for GUI
 
     static EOS_Achievements_GetPlayerAchievementCountOptions GetCountOptions{
         EOS_ACHIEVEMENTS_GETPLAYERACHIEVEMENTCOUNT_API_LATEST,
