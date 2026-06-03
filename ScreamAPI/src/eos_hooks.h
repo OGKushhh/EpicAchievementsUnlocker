@@ -95,4 +95,7 @@ bool InitializeHooks(HMODULE originalDLL);
 void ShutdownHooks();
 bool AreHooksActive();
 
+// GUI thread-safe unlock queue — call from any thread, drained on game thread
+void QueueUnlock(const char* id);
+
 } // namespace EOS_Hooks

@@ -8,6 +8,7 @@
 #include "MinHook.h"
 #include <mutex>
 #include <vector>
+#include <queue>
 #include <thread>
 #include <atomic>
 
@@ -132,6 +133,10 @@ static std::vector<PendingUnlock> g_pendingUnlocks;
 static std::mutex g_pendingMutex;
 static std::atomic<int> g_forcedQueriesPending{0};
 
+// GUI unlock queue — drained on the game thread inside Platform_Tick
+static std::queue<std::string> g_guiUnlockQueue;
+static std::mutex              g_guiQueueMutex;
+
 static void RetryPendingUnlocks() {
     std::lock_guard<std::mutex> lock(g_pendingMutex);
     for (auto& p : g_pendingUnlocks) {
@@ -210,6 +215,19 @@ void EOS_CALL Platform_Release(EOS_HPlatform Handle) {
 }
 
 void EOS_CALL Platform_Tick(EOS_HPlatform Handle) {
+    // Drain GUI unlock queue on the game thread (safe to call EOS here)
+    {
+        std::lock_guard<std::mutex> lk(g_guiQueueMutex);
+        while (!g_guiUnlockQueue.empty()) {
+            const std::string& id = g_guiUnlockQueue.front();
+            Logger::info("[HOOK] Platform_Tick: draining GUI unlock: %s", id.c_str());
+            AchievementManager::findAchievement(id.c_str(), [](Overlay_Achievement& a) {
+                if (a.UnlockState == UnlockState::Locked)
+                    AchievementManager::unlockAchievement(&a);
+            });
+            g_guiUnlockQueue.pop();
+        }
+    }
     Original::Platform_Tick(Handle);
 }
 
@@ -441,6 +459,12 @@ void ShutdownHooks() {
 
 bool AreHooksActive() {
     return hooksInitialized;
+}
+
+void QueueUnlock(const char* id) {
+    std::lock_guard<std::mutex> lk(g_guiQueueMutex);
+    g_guiUnlockQueue.push(id);
+    Logger::info("[HOOK] QueueUnlock: queued %s", id);
 }
 
 } // namespace EOS_Hooks

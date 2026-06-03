@@ -8,6 +8,7 @@
 #include <future>
 #include <atomic>
 #include <thread>
+#include <mutex>
 
 using namespace Util;
 
@@ -18,6 +19,9 @@ void queryAchievementDefinitions();
 void queryAchievementDefinitionsWithRetry(int delayMs = 0);
 
 Achievements achievements;
+static std::mutex g_achMutex;  // guards achievements vector
+
+std::mutex& GetAchievementsMutex() { return g_achMutex; }
 
 // Track if we've already retried due to missing user
 static std::atomic<bool> waitingForUser{false};
@@ -230,6 +234,9 @@ void EOS_CALL queryPlayerAchievementsComplete(const EOS_Achievements_OnQueryPlay
 
     // Log achievement statistics after processing
     LogAchievementStats();
+
+    // Notify GUI that the updated list is ready
+    PipeServer::SendUpdatedList();
 }
 
 // ----------------------------------------------------------------------------

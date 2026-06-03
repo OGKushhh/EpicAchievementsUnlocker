@@ -9,6 +9,7 @@
 #include "achievement_manager.h"
 #include "Overlay_types.h"
 #include "Overlay.h"
+#include "eos_hooks.h"
 
 #include <thread>
 #include <atomic>
@@ -55,21 +56,26 @@ static bool SendPacket(HANDLE pipe, PktType type, const void* payload, uint32_t 
 
 // ── Send full achievement list to newly connected client ──────────────────────
 static void SendAchList(HANDLE pipe) {
-    if (!Overlay::achievements || Overlay::achievements->empty()) {
-        // Send empty list
+    // Snapshot under mutex to avoid data race with EOS callback thread
+    std::vector<Overlay_Achievement> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(AchievementManager::GetAchievementsMutex());
+        if (Overlay::achievements && !Overlay::achievements->empty())
+            snapshot = *Overlay::achievements;
+    }
+
+    if (snapshot.empty()) {
         std::vector<uint8_t> payload(sizeof(AchListHeader), 0);
         SendPacket(pipe, PktType::AchList, payload.data(), (uint32_t)payload.size());
         return;
     }
 
-    auto& achs = *Overlay::achievements;
-
     // Build string blob
     std::string blob;
     std::vector<AchEntry> entries;
-    entries.reserve(achs.size());
+    entries.reserve(snapshot.size());
 
-    for (auto& a : achs) {
+    for (auto& a : snapshot) {
         AchEntry e{};
         auto addStr = [&](const char* s) -> uint32_t {
             uint32_t off = (uint32_t)blob.size();
@@ -127,25 +133,25 @@ static void HandleClient(HANDLE pipe) {
             auto* cmd = reinterpret_cast<CmdUnlockPkt*>(payload.data());
             cmd->id[127] = '\0';
             Logger::info("[PIPE] GUI requests unlock: %s", cmd->id);
-            AchievementManager::findAchievement(cmd->id, [](Overlay_Achievement& a) {
-                if (a.UnlockState == UnlockState::Locked)
-                    AchievementManager::unlockAchievement(&a);
-            });
+            EOS_Hooks::QueueUnlock(cmd->id);  // queued — drained on game thread in Platform_Tick
             break;
         }
         case PktType::CmdUnlockAll:
             Logger::info("[PIPE] GUI requests unlock all");
-            if (Overlay::achievements) {
-                for (auto& a : *Overlay::achievements)
-                    if (a.UnlockState == UnlockState::Locked)
-                        AchievementManager::unlockAchievement(&a);
+            {
+                std::lock_guard<std::mutex> lk(AchievementManager::GetAchievementsMutex());
+                if (Overlay::achievements) {
+                    for (auto& a : *Overlay::achievements)
+                        if (a.UnlockState == UnlockState::Locked)
+                            EOS_Hooks::QueueUnlock(a.AchievementId);
+                }
             }
             break;
         case PktType::CmdRefresh:
             Logger::info("[PIPE] GUI requests refresh");
             AchievementManager::refresh();
-            // Re-send updated list
-            SendAchList(pipe);
+            // SendAchList intentionally removed — refresh() is async.
+            // SendUpdatedList() will be called from queryPlayerAchievementsComplete when ready.
             break;
         default:
             Logger::warn("[PIPE] Unknown command type 0x%02X", (int)hdr.type);
@@ -216,6 +222,13 @@ void Stop() {
         CloseHandle(s_pipe);
         s_pipe = INVALID_HANDLE_VALUE;
     }
+}
+
+void SendUpdatedList() {
+    std::lock_guard<std::mutex> lk(s_pipeMtx);
+    if (s_pipe == INVALID_HANDLE_VALUE) return;
+    SendAchList(s_pipe);
+    Logger::info("[PIPE] SendUpdatedList: sent refreshed achievement list to GUI");
 }
 
 void NotifyUnlock(const char* achievementId) {

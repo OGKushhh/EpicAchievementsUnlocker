@@ -33,8 +33,6 @@ bool bInit                   = false;
 bool bShowInitPopup          = true;
 bool bShowAchievementManager = false;
 
-static float g_MouseWheelDelta = 0.0f;
-
 Achievements*             achievements      = nullptr;
 UnlockAchievementFunction* unlockAchievement = nullptr;
 
@@ -109,21 +107,6 @@ LRESULT WINAPI WindowProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
     return CallWindowProc(originalWindowProc, hWnd, uMsg, wParam, lParam);
 }
 
-void UpdateImGuiMouseInput() {
-    ImGuiIO& io = ImGui::GetIO();
-    POINT mousePos;
-    GetCursorPos(&mousePos);
-    ScreenToClient(gWindow, &mousePos);
-    io.MousePos    = { (float)mousePos.x, (float)mousePos.y };
-    io.MouseDown[0] = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    io.MouseDown[1] = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-    io.MouseDown[2] = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
-    io.MouseWheel   = g_MouseWheelDelta;
-    g_MouseWheelDelta = 0.f;
-}
-
-void AccumulateMouseWheel(float delta) { g_MouseWheelDelta += delta; }
-
 // ── DX11 hooked Present ───────────────────────────────────────────────────────
 HRESULT WINAPI hookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     if (!bInit) {
@@ -154,8 +137,8 @@ HRESULT WINAPI hookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-        UpdateImGuiMouseInput();
-        ImGui::GetIO().MouseDrawCursor = bShowAchievementManager;
+        if (bShowAchievementManager) ShowCursor(FALSE);
+        else ShowCursor(TRUE);
         if (bShowInitPopup)          AchievementManagerUI::DrawInitPopup();
         if (bShowAchievementManager) AchievementManagerUI::DrawAchievementList();
         ImGui::Render();
