@@ -17,6 +17,7 @@
 #include "Overlay.h"
 #include "achievement_manager_ui.h"
 #include "Loader.h"
+#include "Config.h"
 #include "minhook/include/MinHook.h"
 
 #include <dxgi1_4.h>
@@ -65,6 +66,9 @@ static FrameCtx* gFrames = nullptr;
 static bool gInitialized      = false;
 static bool gShutdown         = false;
 static bool gAfterFirstPresent= false;
+
+// Set to false to disable DX12 hook and fall back to kiero DX11
+static bool gDX12Enabled = false; // overridden by Config::EnableDX12Hook() in Init()
 
 // ── DX11 fallback globals (used when game has d3d12.dll but renders DX11) ────
 static bool                    gFallbackAttempted  = false;
@@ -154,17 +158,8 @@ static void RenderFrame(IDXGISwapChain* pSwapChain) {
 
     ImGui::NewFrame();
 
-    {
-        ImGuiIO& io = ImGui::GetIO();
-        POINT pt{};
-        GetCursorPos(&pt);
-        ScreenToClient(gWindow, &pt);
-        io.MousePos      = { (float)pt.x, (float)pt.y };
-        io.MouseDown[0]  = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-        io.MouseDown[1]  = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-        io.MouseDown[2]  = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
-        io.MouseDrawCursor = Overlay::bShowAchievementManager;
-    }
+    if (Overlay::bShowAchievementManager) ShowCursor(FALSE);
+    else ShowCursor(TRUE);
 
     if (Overlay::bShowInitPopup)          AchievementManagerUI::DrawInitPopup();
     if (Overlay::bShowAchievementManager) AchievementManagerUI::DrawAchievementList();
@@ -180,7 +175,9 @@ static void RenderFrame(IDXGISwapChain* pSwapChain) {
 
     if (gFence->GetCompletedValue() < gFenceValue) {
         gFence->SetEventOnCompletion(gFenceValue, gFenceEvent);
-        WaitForSingleObject(gFenceEvent, 2000);
+        DWORD result = WaitForSingleObject(gFenceEvent, 0);
+        if (result == WAIT_TIMEOUT)
+            return; // GPU still busy — skip this frame, don't block
     }
 
     ctx.allocator->Reset();
@@ -273,17 +270,8 @@ HRESULT WINAPI HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
             ImGui_ImplDX11_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
-            {
-                ImGuiIO& io = ImGui::GetIO();
-                POINT pt{};
-                GetCursorPos(&pt);
-                ScreenToClient(Overlay::gWindow, &pt);
-                io.MousePos        = { (float)pt.x, (float)pt.y };
-                io.MouseDown[0]    = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-                io.MouseDown[1]    = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-                io.MouseDown[2]    = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
-                io.MouseDrawCursor = Overlay::bShowAchievementManager;
-            }
+            if (Overlay::bShowAchievementManager) ShowCursor(FALSE);
+            else ShowCursor(TRUE);
             if (Overlay::bShowInitPopup)          AchievementManagerUI::DrawInitPopup();
             if (Overlay::bShowAchievementManager) AchievementManagerUI::DrawAchievementList();
             ImGui::Render();
@@ -457,6 +445,11 @@ cleanup:
 
 // ── Public Init / Shutdown ────────────────────────────────────────────────────
 void Init() {
+    gDX12Enabled = Config::EnableDX12Hook();
+    if (!gDX12Enabled) {
+        Logger::ovrly("[DX12] DX12 hook disabled — skipping (kiero DX11 will handle this game)");
+        return;
+    }
     Logger::ovrly("[DX12] Grabbing vtable pointers...");
 
     void* pPresent = nullptr, *pECL = nullptr, *pResize = nullptr;

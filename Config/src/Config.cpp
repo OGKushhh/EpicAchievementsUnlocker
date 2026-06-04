@@ -24,6 +24,7 @@ bool bLoadIcons = true;
 bool bCacheIcons = true;
 bool bValidateIcons = true;
 bool bForceEpicOverlay = false;
+bool bEnableDX12Hook = false;
 // DLC
 bool bUnlockAllDLC = true;
 bool bForceSuccess = true;
@@ -46,7 +47,8 @@ std::map<std::string, std::map<std::string, void*>> configMap = {
         {"EnableLogging", &bEnableLogging},
         {"EnableOverlay", &bEnableOverlay},
         {"ForceAchievementsConfig", &bForceAchievementsConfig},
-        {"EnableKeyboardNavigation", &bEnableKeyboardNavigation},   // <-- NEW
+        {"EnableKeyboardNavigation", &bEnableKeyboardNavigation},
+        {"EnableDX12Hook", &bEnableDX12Hook},
         {"CustomEOSPath", &sCustomEOSPath},
     }},
     {"Logging", {
@@ -134,6 +136,7 @@ bool LoadIcons() { return bLoadIcons; }
 bool CacheIcons() { return bCacheIcons; }
 bool ValidateIcons(){ return bValidateIcons; }
 bool ForceEpicOverlay(){ return bForceEpicOverlay; }
+bool EnableDX12Hook(){ return bEnableDX12Hook; }
 // DLC
 bool UnlockAllDLC(){ return bUnlockAllDLC; }
 bool ForceSuccess(){ return bForceSuccess; }

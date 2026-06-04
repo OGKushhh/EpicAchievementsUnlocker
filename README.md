@@ -35,14 +35,15 @@ Epic Unlocker is a **DLL injection tool** that hooks the Epic Online Services (E
 ### The Problem We Solve
 
 - ❌ ScreamAPI removed the feature.  
-- ❌ Many games use **DX12 / Vulkan** – standard D3D11 overlay hooks don’t work.  
+- ❌ Many games use **DX12 / Vulkan** – standard D3D11 overlay hooks don't work.  
 
 ### Our Solution
 
 ✅ **Global hotkeys** – unlock everything with `Ctrl+Shift+U` (works anywhere, even in DX12).  
 ✅ **Selective unlock** – use `Ctrl+Shift+L` with a simple text file.  
-✅ **Clean overlay** – for D3D11 games, a modern ImGui window shows progress, search, and filter.  
-✅ **No background threads** – the tool is lightweight and won’t trigger anti‑tamper.  
+✅ **Clean overlay** – a modern ImGui window shows progress, search, and filter.  
+✅ **External GUI** – a standalone Achievement Unlocker window for unlocking without touching the game.  
+✅ **No background threads** – the tool is lightweight and won't trigger anti‑tamper.  
 
 ---
 
@@ -52,10 +53,11 @@ Epic Unlocker is a **DLL injection tool** that hooks the Epic Online Services (E
 |---------|-------------|
 | 🕹️ **Universal** | Works with any EOS‑powered game (e.g., *TMNT: Splintered Fate*, *Dying Light*, *Northgard*). |
 | ⌨️ **Global Hotkeys** | `Ctrl+Shift+U` → unlock all. `Ctrl+Shift+L` → unlock list from `unlock_list.txt`. |
-| 🖥️ **D3D11 Overlay** | Beautiful ImGui window with stats, search/filter, and per‑achievement unlock buttons. |
+| 🖥️ **Overlay** | Beautiful ImGui window with stats, search/filter, and per‑achievement unlock buttons (press `Shift+F5`). |
+| 🪟 **External GUI** | Standalone dark-themed GUI app — connect to any running game and unlock achievements without an overlay. Double-click any achievement to unlock instantly. |
 | 📁 **File‑based unlock** | Drop a text file with achievement IDs – press hotkey to unlock only those. |
 | 📊 **Auto‑logging** | Achievement statistics are written to `ScreamAPI.log` every time player data loads. |
-| ⚙️ **Configurable** | Toggle overlay, logging, forced achievement queries, custom EOS SDK path, etc. |
+| ⚙️ **Configurable** | Toggle overlay, DX12 hook, logging, forced achievement queries, custom EOS SDK path, etc. |
 | 🔌 **MinHook + Kiero** | Reliable hooking of both EOS functions and graphics APIs. |
 
 ---
@@ -73,8 +75,8 @@ Grab `EOSSDK-Win64-Shipping.dll` (and `ScreamAPI.ini`) from the [Releases](../..
 You have two options:
 
 #### A) Proxy Mode (easiest)
-1. Rename the game’s original `EOSSDK-Win64-Shipping.dll` to `EOSSDK-Win64-Shipping_o.dll`.
-2. Copy `EOSSDK-Win64-Shipping.ll` into the same folder as original `EOSSDK-Win64-Shipping.dll`.
+1. Rename the game's original `EOSSDK-Win64-Shipping.dll` to `EOSSDK-Win64-Shipping_o.dll`.
+2. Copy `EOSSDK-Win64-Shipping.dll` into the same folder.
 3. Launch the game – Epic Unlocker will forward most calls to the original DLL.
 
 #### B) Hook Mode (using Koaloader)
@@ -85,14 +87,24 @@ You have two options:
 
 ### 3. Unlock achievements
 
-For DirectX 11 Games An overlay shows up. For non-DX11:
-- **Unlock everything** – press **`Ctrl+Shift+U`** anywhere (even when the game is in the background).
-- **Unlock specific achievements**  
-  1. Create a file called `unlock_list.txt` in the **same folder as the game’s .exe**.  
-  2. Put one achievement ID per line (IDs are shown in `ScreamAPI.log` or in the overlay).  
-  3. Press **`Ctrl+Shift+L`** – only those achievements will unlock.
+#### Using the Overlay (in-game)
+Press **`Shift+F5`** to toggle the overlay. Search, filter, and unlock achievements directly from inside the game.
 
-> 💡 **Tip**: If the overlay doesn’t appear (e.g., DX12 games), don’t worry – the hotkeys still work!
+> ⚠️ **Fullscreen Exclusive games** will minimize when you click overlay buttons. Either:
+> - Switch the game to **Borderless Windowed** mode, or
+> - **Double-click** an achievement in the list to unlock it (no minimize).
+
+#### Using the External GUI
+Launch `EpicAchievementUnlocker.exe` while the game is running. The GUI connects automatically and shows all achievements. Double-click any achievement to unlock it instantly.
+
+> ⚠️ The external GUI also minimizes fullscreen exclusive games when using the **Unlock Selected** button. Use double-click or switch to Borderless Windowed.
+
+#### Using Hotkeys (works everywhere, even DX12)
+- **Unlock everything** – press **`Ctrl+Shift+U`** anywhere.
+- **Unlock specific achievements**
+  1. Create `unlock_list.txt` in the **same folder as the game's .exe**.
+  2. Put one achievement ID per line (IDs shown in `ScreamAPI.log` or the overlay).
+  3. Press **`Ctrl+Shift+L`**.
 
 ---
 
@@ -100,11 +112,13 @@ For DirectX 11 Games An overlay shows up. For non-DX11:
 
 Epic Unlocker uses two powerful hooking libraries:
 
-- **MinHook** – intercepts EOS SDK functions (`EOS_Achievements_UnlockAchievements`, `EOS_Auth_Login`, etc.).  
+- **MinHook** – intercepts EOS SDK functions (`EOS_Achievements_UnlockAchievements`, `EOS_Auth_Login`, etc.).
 - **Kiero** – hooks the graphics API (`IDXGISwapChain::Present`) to render the ImGui overlay.
 
 When the game requests achievement definitions or player progress, Epic Unlocker stores the data locally.  
-When you press a hotkey, it calls the original (hooked) `EOS_Achievements_UnlockAchievements` with the correct parameters – **instantly** unlocking the achievement on Epic’s servers.
+When you press a hotkey or click unlock, it calls the original (hooked) `EOS_Achievements_UnlockAchievements` with the correct parameters – **instantly** unlocking the achievement on Epic's servers.
+
+The external GUI communicates with the in-game DLL over a named pipe. Unlock commands are queued and executed safely on the game thread during `EOS_Platform_Tick` – avoiding any thread-safety issues with the EOS SDK.
 
 ---
 
@@ -114,9 +128,29 @@ Edit `ScreamAPI.ini` to customise behaviour:
 
 ```ini
 [ScreamAPI]
-EnableOverlay = true          ; Show ImGui window (D3D11 only)
-EnableLogging = true          ; Write logs to ScreamAPI.log
-LogLevel = debug              ; debug, info, warn, error
-ForceAchievementsConfig = false ; Some games need this to unlock (enable if stuck)
-EnableKeyboardNavigation	= true			; Enable keyboard navigation in overlay (arrow keys, Tab, Enter, Esc)? Default: True
-CustomEOSPath =               ; Manual path to EOSSDK-Win64-Shipping.dll (if auto search failed)
+EnableItemUnlocker          = True    ; Enable DLC Item unlocking. Default: True
+EnableEntitlementUnlocker   = True    ; Enable Entitlement unlocking. Default: True
+EnableLogging               = True    ; Write logs to ScreamAPI.log. Default: False
+EnableOverlay               = True    ; Show ImGui overlay (Shift+F5). Default: False
+ForceAchievementsConfig     = False   ; Force QueryDefinitions before unlocking. Default: False
+EnableKeyboardNavigation    = True    ; Arrow keys / Tab / Enter / Esc in overlay. Default: True
+EnableDX12Hook              = False   ; Enable experimental DX12 overlay hook. Default: False
+                                      ; Leave False for most games — hotkeys and the
+                                      ; external GUI work without it.
+CustomEOSPath               =         ; Manual path to EOSSDK-Win64-Shipping.dll (optional)
+
+[Logging]
+LogLevel      = INFO   ; DEBUG, INFO, WARN, ERROR
+LogFilename   = ScreamAPI.log
+LogDLCQueries = True
+LogOverlay    = False
+
+[Overlay]
+LoadIcons     = True
+CacheIcons    = True
+ValidateIcons = True
+```
+
+### When to enable `EnableDX12Hook`
+
+Only enable this for **true DX12 games** (e.g., games where neither the overlay nor the DX11 fallback renders). For most games — including DX11 games that load `d3d12.dll` — leave it `False`. The hotkeys and external GUI always work regardless of this setting.

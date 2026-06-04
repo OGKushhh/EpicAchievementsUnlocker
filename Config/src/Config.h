@@ -23,6 +23,7 @@ bool LoadIcons();
 bool CacheIcons();
 bool ValidateIcons();
 bool ForceEpicOverlay();
+bool EnableDX12Hook();
 // DLC
 bool UnlockAllDLC();
 bool ForceSuccess();
