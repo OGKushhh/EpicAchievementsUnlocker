@@ -181,6 +181,11 @@ bool isFeatureAvailable(const char* featureName) {
 		return isVersionOrNewer(1, 15, 0);
 	}
 
+	// QueryOwnershipBySandboxIds - newer DLC ownership check path (v1.14.0+)
+	if (strcmp(featureName, "QueryOwnershipBySandboxIds") == 0) {
+		return isVersionOrNewer(1, 14, 0);
+	}
+
 	// RTC Options in Platform (v1.14.0+)
 	if (strcmp(featureName, "RTCOptions") == 0) {
 		return isVersionOrNewer(1, 14, 0);
@@ -244,6 +249,7 @@ void logCompatibilityInfo() {
 	Logger::info("[COMPAT]   Integrated Platform:     %s", isFeatureAvailable("IntegratedPlatform") ? "YES" : "NO");
 	Logger::info("[COMPAT]   Task Network Timeout:    %s", isFeatureAvailable("TaskNetworkTimeout") ? "YES" : "NO");
 	Logger::info("[COMPAT]   Localized Presence:      %s", isFeatureAvailable("LocalizedPresence") ? "YES" : "NO");
+	Logger::info("[COMPAT]   OwnershipBySandboxIds:   %s", isFeatureAvailable("QueryOwnershipBySandboxIds") ? "YES" : "NO");
 
 	Logger::info("[COMPAT] ");
 	Logger::info("[COMPAT] API Versions:");

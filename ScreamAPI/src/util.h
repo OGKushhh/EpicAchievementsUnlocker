@@ -3,12 +3,17 @@
 #include "eos-sdk/eos_sdk.h"
 
 namespace Util{
+
 template <typename T>
 static bool vectorContains(std::vector<T> vector, T element){
 	return std::find(vector.begin(), vector.end(), element) != vector.end();
 }
 
 std::filesystem::path getDLLparentDir(HMODULE hModule);
+
+// Captured from EOS_Platform_Create -> Options->SandboxId.
+// Used by DLC catalog auto-fetch. Empty until EOS_Platform_Create fires.
+extern std::string g_namespace_id;
 
 extern EOS_HPlatform hPlatform;
 EOS_HPlatform getHPlatform();

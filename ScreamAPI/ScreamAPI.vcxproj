@@ -81,6 +81,7 @@
     <ClInclude Include="src\PipeServer.h" />
     <ClInclude Include="src\pipe_protocol.h" />
     <ClInclude Include="src\util.h" />
+    <ClInclude Include="src\dlc_catalog.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\achievement_manager.cpp" />
@@ -91,6 +92,8 @@
     <ClCompile Include="src\eos-impl\eos_common.cpp" />
     <ClCompile Include="src\eos-impl\eos_connect.cpp" />
     <ClCompile Include="src\eos-impl\eos_ecom_entitlements.cpp" />
+    <ClCompile Include="src\eos-impl\eos_ecom_items.cpp" />
+    <ClCompile Include="src\dlc_catalog.cpp" />
     <ClCompile Include="src\eos-impl\eos_ecom_ownership.cpp" />
     <ClCompile Include="src\eos-impl\eos_ecom_transactions.cpp" />
     <ClCompile Include="src\eos_hooks.cpp" />
@@ -232,6 +235,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
+      <AdditionalDependencies>winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <CustomBuildStep>
       <Command>
@@ -258,6 +262,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
+      <AdditionalDependencies>winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <CustomBuildStep>
       <Command>
@@ -288,6 +293,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
+      <AdditionalDependencies>winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <CustomBuildStep>
       <Command>
@@ -318,6 +324,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
+      <AdditionalDependencies>winhttp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>
