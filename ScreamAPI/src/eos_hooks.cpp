@@ -6,11 +6,13 @@
 #include "eos_compat.h"
 #include "Logger.h"
 #include "MinHook.h"
+#include "dlc_catalog.h"
 #include <mutex>
 #include <vector>
 #include <queue>
 #include <thread>
 #include <atomic>
+#include <map>
 
 namespace EOS_Hooks {
 
@@ -120,6 +122,27 @@ static std::string GetDecoratedName(const char* baseName) {
         } \
     } while(0)
 
+#define INSTALL_HOOK_OPTIONAL(module, funcName, hookFunc, originalPtr) \
+    do { \
+        std::string targetName = GetDecoratedName(#funcName); \
+        void* targetFunc = GetProcAddress(module, targetName.c_str()); \
+        if (targetFunc) { \
+            MH_STATUS status = MH_CreateHook(targetFunc, (void*)&hookFunc, (void**)&originalPtr); \
+            if (status == MH_OK) { \
+                status = MH_EnableHook(targetFunc); \
+                if (status == MH_OK) { \
+                    Logger::info("[HOOK] Successfully hooked (optional): %s", targetName.c_str()); \
+                } else { \
+                    Logger::warn("[HOOK] Failed to enable optional hook for %s: %d (continuing)", targetName.c_str(), status); \
+                } \
+            } else { \
+                Logger::warn("[HOOK] Failed to create optional hook for %s: %d (continuing)", targetName.c_str(), status); \
+            } \
+        } else { \
+            Logger::warn("[HOOK] Optional function not found: %s (continuing)", targetName.c_str()); \
+        } \
+    } while(0)
+
 // ------------------------------------------------------------------
 // Pending unlock storage and retry mechanism
 // ------------------------------------------------------------------
@@ -189,6 +212,10 @@ EOS_HPlatform EOS_CALL Platform_Create(const EOS_Platform_Options* Options) {
         Logger::debug("[HOOK]   ApiVersion: %d", Options->ApiVersion);
         Logger::debug("[HOOK]   ProductId: %s", Options->ProductId ? Options->ProductId : "NULL");
         Logger::debug("[HOOK]   Flags: %llu", Options->Flags);
+        if (Options->SandboxId && Options->SandboxId[0] != '\0') {
+            Util::g_namespace_id = Options->SandboxId;
+            Logger::info("[HOOK]   Captured namespace_id: %s", Options->SandboxId);
+        }
         if (Config::ForceEpicOverlay()) {
             auto mOptions = const_cast<EOS_Platform_Options*>(Options);
             mOptions->Flags = 0;
@@ -318,29 +345,211 @@ EOS_NotificationId EOS_CALL Achievements_AddNotifyAchievementsUnlocked(EOS_HAchi
     return Original::Achievements_AddNotifyAchievementsUnlocked(Handle, Options, ClientData, NotificationFn);
 }
 
-// Ecom hooks
+// ============================================================================
+// Ecom hooks — actual DLC logic (proxy mode equivalent, using Original:: trampolines)
+// ============================================================================
+
+// Pre-built ownership list for the ForceSuccess fallback path.
+static std::vector<EOS_Ecom_ItemOwnership> g_ownerships;
+
+// Entitlement state — rebuilt on every QueryEntitlements call.
+static std::map<std::string, std::string> g_entitlement_map;
+static std::vector<std::string>           g_entitlement_ids;
+
+// DLC catalog cache — fetched once per session.
+static std::map<std::string, std::string> g_catalog_cache;
+static bool                               g_catalog_fetched = false;
+
+static void AutoFetchEntitlements() {
+    std::string ns = Util::g_namespace_id;
+    if (ns.empty()) {
+        ns = Config::NamespaceId();
+        if (!ns.empty())
+            Logger::debug("[HOOK] DLC auto-fetch: using NamespaceId from config: %s", ns.c_str());
+    }
+    if (ns.empty()) {
+        Logger::warn("[HOOK] DLC auto-fetch: namespace_id unavailable. "
+            "Set NamespaceId= in [ScreamAPI] if needed.");
+        return;
+    }
+    if (!g_catalog_fetched) {
+        g_catalog_fetched = true;
+        auto result = DlcCatalog::fetch(ns);
+        if (result.has_value()) {
+            g_catalog_cache = std::move(*result);
+            Logger::dlc("[HOOK] Auto-fetch: cached %zu entries", g_catalog_cache.size());
+        } else {
+            Logger::warn("[HOOK] Auto-fetch: failed to retrieve catalog from Epic's API");
+        }
+    }
+    for (auto& [id, title] : g_catalog_cache) {
+        if (Config::IsDlcUnlocked(id, false)) {
+            Logger::debug("[HOOK]   Auto-fetch adding: %s", id.c_str());
+            g_entitlement_map[id] = title;
+        }
+    }
+}
+
+static void InjectExtraEntitlements() {
+    for (auto& [id, title] : Config::ExtraEntitlements()) {
+        if (Config::IsDlcUnlocked(id, true)) {
+            Logger::debug("[HOOK]   Config adding: %s", id.c_str());
+            g_entitlement_map[id] = title;
+        }
+    }
+}
+
+static EOS_Ecom_Entitlement* MakeEntitlement(const std::string& id, const std::string& title) {
+    auto* e = new EOS_Ecom_Entitlement{};
+    e->ApiVersion      = EOS_ECOM_ENTITLEMENT_API_LATEST;
+    e->EntitlementId   = id.c_str();
+    e->CatalogItemId   = id.c_str();
+    e->EntitlementName = title.c_str();
+    e->bRedeemed       = false;
+    e->EndTimestamp    = -1;
+    e->ServerIndex     = -1;
+    return e;
+}
+
 void EOS_CALL Ecom_QueryOwnership(EOS_HEcom Handle, const EOS_Ecom_QueryOwnershipOptions* Options, void* ClientData, const EOS_Ecom_OnQueryOwnershipCallback CompletionDelegate) {
     Logger::info("[HOOK] EOS_Ecom_QueryOwnership called");
-    Original::Ecom_QueryOwnership(Handle, Options, ClientData, CompletionDelegate);
+
+    g_ownerships.clear();
+    if (Options) {
+        Logger::dlc("[HOOK] Game queried ownership of %d item(s):", Options->CatalogItemIdCount);
+        for (uint32_t i = 0; i < Options->CatalogItemIdCount; i++) {
+            const char* id = Options->CatalogItemIds[i];
+            Logger::dlc("[HOOK]   Item ID: %s", id);
+            bool unlocked = Config::IsDlcUnlocked(std::string(id), true);
+            g_ownerships.emplace_back(EOS_Ecom_ItemOwnership{
+                EOS_ECOM_ITEMOWNERSHIP_API_LATEST,
+                Util::copy_c_string(id),
+                unlocked ? EOS_EOwnershipStatus::EOS_OS_Owned : EOS_EOwnershipStatus::EOS_OS_NotOwned
+            });
+        }
+    } else {
+        Logger::warn("[HOOK] Game queried DLC ownership without Options parameter");
+    }
+
+    if (Config::EnableOwnershipUnlocker()) {
+        struct Container {
+            void* ClientData;
+            EOS_Ecom_OnQueryOwnershipCallback CompletionDelegate;
+        };
+        auto* container = new Container{ClientData, CompletionDelegate};
+        Original::Ecom_QueryOwnership(Handle, Options, container,
+            [](const EOS_Ecom_QueryOwnershipCallbackInfo* Data) {
+                auto* c = static_cast<Container*>(Data->ClientData);
+                auto* mData = const_cast<EOS_Ecom_QueryOwnershipCallbackInfo*>(Data);
+
+                if (mData->ResultCode != EOS_EResult::EOS_Success) {
+                    Logger::warn("[HOOK] EOS_Ecom_QueryOwnership failed: %s",
+                        EOS_EResult_ToString(mData->ResultCode));
+                    if (Config::ForceSuccess()) {
+                        Logger::warn("[HOOK] Forcing EOS_Success");
+                        mData->ItemOwnershipCount = (uint32_t)g_ownerships.size();
+                        mData->ItemOwnership      = g_ownerships.data();
+                        mData->ResultCode         = EOS_EResult::EOS_Success;
+                    }
+                }
+
+                Logger::dlc("[HOOK] Responding with %d ownership(s):", mData->ItemOwnershipCount);
+                for (uint32_t i = 0; i < mData->ItemOwnershipCount; i++) {
+                    auto* item = const_cast<EOS_Ecom_ItemOwnership*>(mData->ItemOwnership + i);
+                    bool original = (item->OwnershipStatus == EOS_EOwnershipStatus::EOS_OS_Owned);
+                    bool unlocked = Config::IsDlcUnlocked(std::string(item->Id), original);
+                    item->OwnershipStatus = unlocked
+                        ? EOS_EOwnershipStatus::EOS_OS_Owned
+                        : EOS_EOwnershipStatus::EOS_OS_NotOwned;
+                    Logger::dlc("[HOOK]   [%s] %s", unlocked ? "Owned" : "Not Owned", item->Id);
+                }
+
+                mData->ClientData = c->ClientData;
+                c->CompletionDelegate(Data);
+                delete c;
+            }
+        );
+    } else {
+        Original::Ecom_QueryOwnership(Handle, Options, ClientData, CompletionDelegate);
+    }
 }
 
 void EOS_CALL Ecom_QueryEntitlements(EOS_HEcom Handle, const EOS_Ecom_QueryEntitlementsOptions* Options, void* ClientData, const EOS_Ecom_OnQueryEntitlementsCallback CompletionDelegate) {
     Logger::info("[HOOK] EOS_Ecom_QueryEntitlements called");
-    Original::Ecom_QueryEntitlements(Handle, Options, ClientData, CompletionDelegate);
+
+    if (!Config::EnableEntitlementUnlocker()) {
+        Original::Ecom_QueryEntitlements(Handle, Options, ClientData, CompletionDelegate);
+        return;
+    }
+
+    g_entitlement_map.clear();
+    g_entitlement_ids.clear();
+
+    Logger::dlc("[HOOK] Game queried %d entitlement(s):", Options->EntitlementNameCount);
+    for (uint32_t i = 0; i < Options->EntitlementNameCount; i++) {
+        const char* id = Options->EntitlementNames[i];
+        Logger::dlc("[HOOK]   %s", id);
+        if (Config::IsDlcUnlocked(std::string(id), true))
+            g_entitlement_map[id] = "Unknown Title";
+    }
+
+    struct Container {
+        void* ClientData;
+        EOS_Ecom_OnQueryEntitlementsCallback CompletionDelegate;
+    };
+    auto* container = new Container{ClientData, CompletionDelegate};
+    Original::Ecom_QueryEntitlements(Handle, Options, container,
+        [](const EOS_Ecom_QueryEntitlementsCallbackInfo* Data) {
+            auto* c = static_cast<Container*>(Data->ClientData);
+            auto* mData = const_cast<EOS_Ecom_QueryEntitlementsCallbackInfo*>(Data);
+            try {
+                AutoFetchEntitlements();
+                InjectExtraEntitlements();
+
+                g_entitlement_ids.clear();
+                for (auto& [id, title] : g_entitlement_map)
+                    g_entitlement_ids.push_back(id);
+
+                Logger::dlc("[HOOK] Responding with %zu entitlement(s):", g_entitlement_map.size());
+                for (auto& [id, title] : g_entitlement_map)
+                    Logger::dlc("[HOOK]   %s = \"%s\"", id.c_str(), title.c_str());
+
+                mData->ResultCode = EOS_EResult::EOS_Success;
+            } catch (const std::exception& e) {
+                Logger::error("[HOOK] QueryEntitlements callback error: %s", e.what());
+            }
+            mData->ClientData = c->ClientData;
+            c->CompletionDelegate(Data);
+            delete c;
+        }
+    );
 }
 
 uint32_t EOS_CALL Ecom_GetEntitlementsCount(EOS_HEcom Handle, const EOS_Ecom_GetEntitlementsCountOptions* Options) {
-    uint32_t result = Original::Ecom_GetEntitlementsCount(Handle, Options);
-    Logger::debug("[HOOK] EOS_Ecom_GetEntitlementsCount -> %d", result);
-    return result;
+    Logger::debug("[HOOK] EOS_Ecom_GetEntitlementsCount called");
+    if (!Config::EnableEntitlementUnlocker()) {
+        return Original::Ecom_GetEntitlementsCount(Handle, Options);
+    }
+    const auto count = (uint32_t)g_entitlement_map.size();
+    Logger::debug("[HOOK] GetEntitlementsCount: %u", count);
+    return count;
 }
 
 EOS_EResult EOS_CALL Ecom_CopyEntitlementByIndex(EOS_HEcom Handle, const EOS_Ecom_CopyEntitlementByIndexOptions* Options, EOS_Ecom_Entitlement** OutEntitlement) {
-    EOS_EResult result = Original::Ecom_CopyEntitlementByIndex(Handle, Options, OutEntitlement);
-    if (result == EOS_EResult::EOS_Success && OutEntitlement && *OutEntitlement) {
-        Logger::debug("[HOOK] EOS_Ecom_CopyEntitlementByIndex -> %s", (*OutEntitlement)->EntitlementName);
+    Logger::debug("[HOOK] EOS_Ecom_CopyEntitlementByIndex called");
+    if (!Config::EnableEntitlementUnlocker()) {
+        return Original::Ecom_CopyEntitlementByIndex(Handle, Options, OutEntitlement);
     }
-    return result;
+    const auto index = Options->EntitlementIndex;
+    if (index >= g_entitlement_ids.size()) {
+        Logger::warn("[HOOK] CopyEntitlementByIndex: index %u out of bounds (%zu)", index, g_entitlement_ids.size());
+        return EOS_EResult::EOS_NotFound;
+    }
+    const auto& id    = g_entitlement_ids[index];
+    const auto& title = g_entitlement_map.at(id);
+    Logger::dlc("[HOOK] CopyEntitlementByIndex[%u]: %s", index, id.c_str());
+    *OutEntitlement = MakeEntitlement(id, title);
+    return EOS_EResult::EOS_Success;
 }
 
 // Connect hooks
@@ -432,12 +641,12 @@ bool InitializeHooks(HMODULE originalDLL) {
     Logger::info("[HOOK] Installing Connect hooks...");
     INSTALL_HOOK(originalDLL, EOS_Connect_Login, Hooks::Connect_Login, Original::Connect_Login);
     INSTALL_HOOK(originalDLL, EOS_Connect_GetLoggedInUserByIndex, Hooks::Connect_GetLoggedInUserByIndex, Original::Connect_GetLoggedInUserByIndex);
-    INSTALL_HOOK(originalDLL, EOS_Connect_AddNotifyLoginStatusChanged, Hooks::Connect_AddNotifyLoginStatusChanged, Original::Connect_AddNotifyLoginStatusChanged);
+    INSTALL_HOOK_OPTIONAL(originalDLL, EOS_Connect_AddNotifyLoginStatusChanged, Hooks::Connect_AddNotifyLoginStatusChanged, Original::Connect_AddNotifyLoginStatusChanged);
 
     Logger::info("[HOOK] Installing Auth hooks...");
     INSTALL_HOOK(originalDLL, EOS_Auth_Login, Hooks::Auth_Login, Original::Auth_Login);
     INSTALL_HOOK(originalDLL, EOS_Auth_GetLoggedInAccountByIndex, Hooks::Auth_GetLoggedInAccountByIndex, Original::Auth_GetLoggedInAccountByIndex);
-    INSTALL_HOOK(originalDLL, EOS_Auth_AddNotifyLoginStatusChanged, Hooks::Auth_AddNotifyLoginStatusChanged, Original::Auth_AddNotifyLoginStatusChanged);
+    INSTALL_HOOK_OPTIONAL(originalDLL, EOS_Auth_AddNotifyLoginStatusChanged, Hooks::Auth_AddNotifyLoginStatusChanged, Original::Auth_AddNotifyLoginStatusChanged);
 
     hooksInitialized = true;
 
