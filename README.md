@@ -128,27 +128,62 @@ Edit `ScreamAPI.ini` to customise behaviour:
 
 ```ini
 [ScreamAPI]
-EnableItemUnlocker          = True    ; Enable DLC Item unlocking. Default: True
-EnableEntitlementUnlocker   = True    ; Enable Entitlement unlocking. Default: True
-EnableLogging               = True    ; Write logs to ScreamAPI.log. Default: False
-EnableOverlay               = True    ; Show ImGui overlay (Shift+F5). Default: False
-ForceAchievementsConfig     = False   ; Force QueryDefinitions before unlocking. Default: False
-EnableKeyboardNavigation    = True    ; Arrow keys / Tab / Enter / Esc in overlay. Default: True
-EnableDX12Hook              = False   ; Enable experimental DX12 overlay hook. Default: False
-                                      ; Leave False for most games — hotkeys and the
-                                      ; external GUI work without it.
-CustomEOSPath               =         ; Manual path to EOSSDK-Win64-Shipping.dll (optional)
+; General options
+EnableOwnershipUnlocker       = True      ; Unlock DLC ownership checks (was EnableItemUnlocker)
+EnableEntitlementUnlocker     = True      ; Unlock entitlement queries
+EnableLogging                 = True      ; Generate ScreamAPI.log
+EnableOverlay                 = True      ; Show achievement overlay
+ForceAchievementsConfig       = False     ; Force achievement definitions query before unlock
+EnableKeyboardNavigation      = True      ; Allow keyboard navigation in overlay (arrows, Tab, Enter, Esc)
+EnableDX12Hook                = False     ; Hook DX12 games (DX11 is always tried first)
+BlockMetrics                  = True     ; Block Epic telemetry/metrics (if supported)
+; Optional custom paths / overrides
+CustomEOSPath                 =           ; Absolute path to EOSSDK-Win64-Shipping.dll (optional)
+NamespaceId                   =           ; Override the game's namespace ID (rarely needed)
 
 [Logging]
-LogLevel      = INFO   ; DEBUG, INFO, WARN, ERROR
-LogFilename   = ScreamAPI.log
-LogDLCQueries = True
-LogOverlay    = False
+LogLevel                      = INFO      ; DEBUG / INFO / WARN / ERROR
+LogFilename                   = ScreamAPI.log
+LogDLCQueries                 = True      ; Log DLC ownership/entitlement checks
+LogAchievementQueries         = True      ; Log achievement queries and unlocks
+LogOverlay                    = True      ; Log overlay (initialization, toggles, etc.)
 
 [Overlay]
-LoadIcons     = True
-CacheIcons    = True
-ValidateIcons = True
+LoadIcons                     = False     ; Download achievement icons (True = download, False = no icons)
+CacheIcons                    = True      ; Save icons locally (if LoadIcons=True)
+ValidateIcons                 = True      ; Check cached icon size against online version (if LoadIcons=True)
+ForceEpicOverlay              = False     ; Re-enable the original Epic overlay if the game disabled it
+
+[DLC]
+UnlockAllDLC                  = True      ; Respond positively to all DLC requests
+ForceSuccess                  = False      ; Always return EOS_SUCCESS even if internal checks fail
+
+; ----------------------------------------------------------------------
+; NEW: Per-item DLC override (replaces old [DLC_List] for fine control)
+; Format: {item_id} = unlocked | locked | original
+;   unlocked – always return owned/unlocked
+;   locked   – always return not owned/locked
+;   original – use the value returned by the EOS backend (or game default)
+; ----------------------------------------------------------------------
+[DLC_Override]
+; Example: 56acef6d526e4b819caff773dd244635 = unlocked   ; Subject 2923 DLC unlocked
+; Example: 14d1517dbd7242bcb5cb94881ca1c28f = locked     ; Swamps of Corsus locked
+
+; ----------------------------------------------------------------------
+; NEW: Manually inject extra entitlements (useful for testing or adding missing items)
+; Format: {entitlement_id} = Display Title
+; ----------------------------------------------------------------------
+[Extra_Entitlements]
+; Example: some_entitlement_id = My Custom Item
+
+; ----------------------------------------------------------------------
+; LEGACY: Old-style DLC list (still supported, but consider using [DLC_Override] instead)
+; This section is only used when UnlockAllDLC = False.
+; Format: {item_id} = True   (to unlock) or = False (to block)
+; ----------------------------------------------------------------------
+[DLC_List]
+; Example: 56acef6d526e4b819caff773dd244635 = True
+; Example: 14d1517dbd7242bcb5cb94881ca1c28f = False
 ```
 
 ### When to enable `EnableDX12Hook`
