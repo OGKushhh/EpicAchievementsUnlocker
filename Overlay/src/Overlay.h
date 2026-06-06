@@ -20,5 +20,7 @@ LRESULT WINAPI WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 void Init(HMODULE hMod, Achievements* pAchievements, UnlockAchievementFunction* pUnlockAchievement);
 void Shutdown();
+void OverlayOpen();
+void OverlayClose();
 
 } // namespace Overlay

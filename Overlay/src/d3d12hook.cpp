@@ -158,8 +158,8 @@ static void RenderFrame(IDXGISwapChain* pSwapChain) {
 
     ImGui::NewFrame();
 
-    if (Overlay::bShowAchievementManager) ShowCursor(FALSE);
-    else ShowCursor(TRUE);
+    if (Overlay::bShowAchievementManager)
+        ::SetCursor(::LoadCursor(nullptr, IDC_ARROW));
 
     if (Overlay::bShowInitPopup)          AchievementManagerUI::DrawInitPopup();
     if (Overlay::bShowAchievementManager) AchievementManagerUI::DrawAchievementList();
@@ -270,8 +270,8 @@ HRESULT WINAPI HookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
             ImGui_ImplDX11_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
-            if (Overlay::bShowAchievementManager) ShowCursor(FALSE);
-            else ShowCursor(TRUE);
+            if (Overlay::bShowAchievementManager)
+                ::SetCursor(::LoadCursor(nullptr, IDC_ARROW));
             if (Overlay::bShowInitPopup)          AchievementManagerUI::DrawInitPopup();
             if (Overlay::bShowAchievementManager) AchievementManagerUI::DrawAchievementList();
             ImGui::Render();

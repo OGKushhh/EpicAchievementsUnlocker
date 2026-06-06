@@ -23,9 +23,9 @@ HRESULT(WINAPI* originalPresent)(IDXGISwapChain*, UINT, UINT);
 HRESULT(WINAPI* originalResizeBuffers)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
 LRESULT(WINAPI* originalWindowProc)(HWND, UINT, WPARAM, LPARAM);
 
-HWND                  gWindow             = nullptr;
-ID3D11Device*         gD3D11Device        = nullptr;
-ID3D11DeviceContext*  gContext            = nullptr;
+HWND                    gWindow           = nullptr;
+ID3D11Device*           gD3D11Device      = nullptr;
+ID3D11DeviceContext*    gContext          = nullptr;
 ID3D11RenderTargetView* gRenderTargetView = nullptr;
 
 bool bKieroInit              = false;
@@ -33,20 +33,59 @@ bool bInit                   = false;
 bool bShowInitPopup          = true;
 bool bShowAchievementManager = false;
 
-Achievements*             achievements      = nullptr;
+// Saved cursor clip rect — restored when overlay closes
+static RECT g_savedClipRect = {};
+static bool g_clipSaved     = false;
+
+// Mouse wheel accumulator — drained in UpdateImGuiMouseInput
+static float g_MouseWheelDelta = 0.0f;
+
+Achievements*              achievements      = nullptr;
 UnlockAchievementFunction* unlockAchievement = nullptr;
 
-// ── Win32 subclass WndProc (DX11 path) ───────────────────────────────────────
+// ── Manual mouse input — ImGui 1.92.9 event API ───────────────────────────────
+static void UpdateImGuiMouseInput() {
+    ImGuiIO& io = ImGui::GetIO();
+
+    POINT pt;
+    GetCursorPos(&pt);
+    ScreenToClient(gWindow, &pt);
+    io.AddMousePosEvent((float)pt.x, (float)pt.y);
+
+    io.AddMouseButtonEvent(0, (GetAsyncKeyState(VK_LBUTTON)  & 0x8000) != 0);
+    io.AddMouseButtonEvent(1, (GetAsyncKeyState(VK_RBUTTON)  & 0x8000) != 0);
+    io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON)  & 0x8000) != 0);
+    io.AddMouseButtonEvent(3, (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) != 0);
+    io.AddMouseButtonEvent(4, (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0);
+
+    io.AddMouseWheelEvent(0.0f, g_MouseWheelDelta);
+    g_MouseWheelDelta = 0.0f;
+}
+
+// ── Cursor clip management ────────────────────────────────────────────────────
+void OverlayOpen() {
+    g_clipSaved = (GetClipCursor(&g_savedClipRect) != FALSE);
+    ClipCursor(nullptr);
+    ReleaseCapture();
+    ::SetCursor(::LoadCursor(nullptr, IDC_ARROW));
+    Logger::ovrly("[OVERLAY] Opened — cursor clip released");
+}
+
+void OverlayClose() {
+    if (g_clipSaved)
+        ClipCursor(&g_savedClipRect);
+    else
+        ClipCursor(nullptr);
+    g_clipSaved = false;
+    Logger::ovrly("[OVERLAY] Closed — cursor clip restored");
+}
+
+// ── Win32 subclass WndProc ────────────────────────────────────────────────────
+// Shift+F5 handled EXCLUSIVELY by HotkeyHandler (raw input) to prevent double-fire.
 LRESULT WINAPI WindowProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+
+    // ── Hotkeys (always active) ───────────────────────────────────────────────
     if (uMsg == WM_KEYDOWN) {
-        if (GetKeyState(VK_SHIFT) & 0x8000 && wParam == VK_F5) {
-            bShowInitPopup = false;
-            bShowAchievementManager = !bShowAchievementManager;
-            Logger::info("[HOTKEY] Shift+F5 pressed, overlay toggled");
-            if (bShowAchievementManager)
-                AchievementManagerUI::RequestFocus();
-            return 0;
-        }
         if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) && wParam == 'U') {
             Logger::info("[HOTKEY] Ctrl+Shift+U pressed - unlocking all");
             if (achievements) {
@@ -83,27 +122,28 @@ LRESULT WINAPI WindowProc(const HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         }
     }
 
+    // Accumulate wheel delta — drained in UpdateImGuiMouseInput
+    if (uMsg == WM_MOUSEWHEEL) {
+        g_MouseWheelDelta += (float)GET_WHEEL_DELTA_WPARAM(wParam) / (float)WHEEL_DELTA;
+        return 0;
+    }
+
+    // ── Overlay input ─────────────────────────────────────────────────────────
     if (bShowAchievementManager) {
-        // Always forward scroll directly — WM_MOUSEWHEEL doesn't go through
-        // the pointer translation block so it must be caught explicitly.
-        if (uMsg == WM_MOUSEWHEEL || uMsg == WM_MOUSEHWHEEL) {
-            ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
-            return 0;
+        // Prevent game from hiding cursor
+        if (uMsg == WM_SETCURSOR) {
+            ::SetCursor(::LoadCursor(nullptr, IDC_ARROW));
+            return TRUE;
         }
 
-        UINT translatedMsg = uMsg;
-        switch (uMsg) {
-        case WM_POINTERDOWN:   translatedMsg = WM_LBUTTONDOWN; break;
-        case WM_POINTERUP:     translatedMsg = WM_LBUTTONUP;   break;
-        case WM_POINTERWHEEL:  translatedMsg = WM_MOUSEWHEEL;  break;
-        case WM_POINTERUPDATE: translatedMsg = WM_SETCURSOR;   break;
-        default: break;
-        }
-        ImGui_ImplWin32_WndProcHandler(hWnd, translatedMsg, wParam, lParam);
+        // Forward messages to ImGui event queue
+        ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam);
+
         ImGuiIO& io = ImGui::GetIO();
-        if (io.WantCaptureKeyboard || io.WantCaptureMouse)
+        if (io.WantCaptureMouse || io.WantCaptureKeyboard)
             return 0;
     }
+
     return CallWindowProc(originalWindowProc, hWnd, uMsg, wParam, lParam);
 }
 
@@ -116,6 +156,7 @@ HRESULT WINAPI hookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
             DXGI_SWAP_CHAIN_DESC sd;
             pSwapChain->GetDesc(&sd);
             gWindow = sd.OutputWindow;
+            Logger::ovrly("hookedPresent: Got D3D11 device, window: %p", gWindow);
 
             ID3D11Texture2D* pBB;
             if (SUCCEEDED(pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&pBB))) {
@@ -129,6 +170,7 @@ HRESULT WINAPI hookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
             Logger::ovrly("hookedPresent: DX11 overlay ready");
             Loader::AsyncLoadIcons();
         } else {
+            Logger::error("hookedPresent: Failed to get D3D11 device");
             bInit = true;
         }
     }
@@ -137,8 +179,10 @@ HRESULT WINAPI hookedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-        if (bShowAchievementManager) ShowCursor(FALSE);
-        else ShowCursor(TRUE);
+
+        if (bShowAchievementManager)
+            UpdateImGuiMouseInput();
+
         if (bShowInitPopup)          AchievementManagerUI::DrawInitPopup();
         if (bShowAchievementManager) AchievementManagerUI::DrawAchievementList();
         ImGui::Render();
@@ -178,52 +222,25 @@ void Init(HMODULE hMod, Achievements* pAchievements, UnlockAchievementFunction* 
         std::lock_guard<std::mutex> guard(initMutex);
         if (bKieroInit) return;
 
-        // ── Wait for game window ─────────────────────────────────────────────
-        // Launcher-based games (cmd → game.exe) load graphics DLLs before the
-        // game window exists. We wait up to 10s for a visible non-console window.
-        {
-            DWORD pid = GetCurrentProcessId();
-            Logger::ovrly("Overlay::Init: Waiting for game window (pid %u)...", pid);
-            for (int i = 0; i < 200; i++) {
-                struct Finder { DWORD pid; HWND found; };
-                Finder f{ pid, nullptr };
-                EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
-                    auto* f = reinterpret_cast<Finder*>(lp);
-                    DWORD wp = 0;
-                    GetWindowThreadProcessId(hwnd, &wp);
-                    if (wp == f->pid && IsWindowVisible(hwnd)) {
-                        wchar_t cls[64]{};
-                        GetClassNameW(hwnd, cls, 64);
-                        if (wcscmp(cls, L"ConsoleWindowClass") != 0) {
-                            f->found = hwnd; return FALSE;
-                        }
-                    }
-                    return TRUE;
-                }, (LPARAM)&f);
-                if (f.found) { Logger::ovrly("Overlay::Init: Game window found (%p)", f.found); break; }
-                Sleep(50);
-            }
-        }
-
         bool hasDX12 = GetModuleHandle(TEXT("d3d12.dll")) != NULL;
         bool hasDX11 = GetModuleHandle(TEXT("d3d11.dll")) != NULL;
         Logger::ovrly("Overlay::Init: d3d12.dll=%s  d3d11.dll=%s",
                       hasDX12 ? "YES" : "NO", hasDX11 ? "YES" : "NO");
 
-        // ── DX12 path ────────────────────────────────────────────────────────
-        if (hasDX12) {
+        // DX12 path — only if explicitly enabled in config
+        if (hasDX12 && Config::EnableDX12Hook()) {
             Logger::ovrly("Overlay::Init: Initializing D3D12Hook");
             D3D12Hook::Init();
             bKieroInit = true;
-
             static auto hidePopup = std::async(std::launch::async, [] {
                 Sleep(POPUP_DURATION_MS); bShowInitPopup = false;
             });
-            return; // DX12 games often also load d3d11.dll — don't double-hook
+            return;
         }
 
-        // ── DX11 path (kiero) ────────────────────────────────────────────────
+        // DX11 path — direct kiero init, no window waiting
         if (hasDX11) {
+            Logger::ovrly("Overlay::Init: Calling kiero::init");
             auto result = kiero::init(kiero::RenderType::D3D11);
             if (result != kiero::Status::Success) {
                 Logger::error("Kiero DX11 init failed: %d", result);
@@ -234,7 +251,6 @@ void Init(HMODULE hMod, Achievements* pAchievements, UnlockAchievementFunction* 
             kiero::bind(D3D11_Present,       (void**)&originalPresent,       hookedPresent);
             kiero::bind(D3D11_ResizeBuffers, (void**)&originalResizeBuffers, hookedResizeBuffer);
             Logger::ovrly("Kiero: Hooked Present and ResizeBuffers");
-
             static auto hidePopup = std::async(std::launch::async, [] {
                 Sleep(POPUP_DURATION_MS); bShowInitPopup = false;
             });
@@ -245,7 +261,7 @@ void Init(HMODULE hMod, Achievements* pAchievements, UnlockAchievementFunction* 
 // ── Shutdown ──────────────────────────────────────────────────────────────────
 void Shutdown() {
     bool hasDX12 = GetModuleHandle(TEXT("d3d12.dll")) != NULL;
-    if (hasDX12) {
+    if (hasDX12 && Config::EnableDX12Hook()) {
         D3D12Hook::Shutdown();
     } else {
         AchievementManagerUI::ShutdownImGui();

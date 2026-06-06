@@ -60,12 +60,16 @@ static void HandleRawKeyboard(RAWKEYBOARD& kb) {
     if (vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT) sShiftDown = down;
     if (vk == VK_F5) {
         if (down && !sF5Down && sShiftDown) {
-            Overlay::bShowInitPopup         = false;
+            Overlay::bShowInitPopup          = false;
             Overlay::bShowAchievementManager = !Overlay::bShowAchievementManager;
             Logger::info("[HOTKEY] Shift+F5 (raw) — overlay %s",
                          Overlay::bShowAchievementManager ? "shown" : "hidden");
-            if (Overlay::bShowAchievementManager)
+            if (Overlay::bShowAchievementManager) {
+                Overlay::OverlayOpen();
                 AchievementManagerUI::RequestFocus();
+            } else {
+                Overlay::OverlayClose();
+            }
         }
         sF5Down = down;
     }
