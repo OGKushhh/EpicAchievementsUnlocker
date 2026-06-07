@@ -70,7 +70,7 @@ namespace ScreamAPI
                      logPath.generic_wstring());
         PipeServer::SetLogPath(logPath.generic_wstring());
 
-        Logger::info("ScreamAPI v" SCREAM_API_VERSION);
+        Logger::info("Epic Unlocker v" SCREAM_API_VERSION);
         Logger::debug("DLL init function called");
         Logger::debug("EnableOverlay: %s", Config::EnableOverlay() ? "true" : "false");
 
