@@ -4,6 +4,7 @@
 #include "dlc_catalog.h"
 #include "util.h"
 #include <map>
+#include <mutex>
 #include <vector>
 
 namespace {
@@ -15,6 +16,8 @@ std::map<std::string, std::string> entitlement_map;
 std::vector<std::string> entitlement_ids;
 
 // Catalog cache — fetched once per session.
+// Protected by s_cache_mutex because PipeServer reads it from a different thread.
+std::mutex s_cache_mutex;
 std::map<std::string, std::string> s_catalog_cache;
 bool s_catalog_fetched = false;
 
@@ -36,6 +39,7 @@ void auto_fetch_entitlements(){
         s_catalog_fetched = true;
         auto result = DlcCatalog::fetch(ns);
         if(result.has_value()){
+            std::lock_guard<std::mutex> lk(s_cache_mutex);
             s_catalog_cache = std::move(*result);
             Logger::dlc("Auto-fetch: cached %zu entries", s_catalog_cache.size());
         } else {
@@ -45,6 +49,7 @@ void auto_fetch_entitlements(){
 
     // original_unlocked=false: auto-fetched items are not originally owned,
     // so DLC_Override=original means skip them.
+    std::lock_guard<std::mutex> lk(s_cache_mutex);
     for(auto& [id, title] : s_catalog_cache){
         if(Config::IsDlcUnlocked(id, false)){
             Logger::debug("  Auto-fetch adding: %s - \"%s\"", id.c_str(), title.c_str());
@@ -318,4 +323,12 @@ EOS_DECLARE_FUNC(void) EOS_Ecom_RedeemEntitlements(
 			);
 		}
 	);
+}
+
+// ── Catalog snapshot for PipeServer ──────────────────────────────────────────
+// Called from PipeServer thread on GUI connect; mutex guards the cache.
+// Returns a copy so the caller doesn't need to hold the lock.
+std::map<std::string, std::string> GetCatalogSnapshot() {
+    std::lock_guard<std::mutex> lk(s_cache_mutex);
+    return s_catalog_cache;
 }

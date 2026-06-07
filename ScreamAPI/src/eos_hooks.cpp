@@ -44,9 +44,12 @@ namespace Original {
 
     // Ecom
     decltype(&EOS_Ecom_QueryOwnership) Ecom_QueryOwnership = nullptr;
+    decltype(&EOS_Ecom_QueryOwnershipBySandboxIds) Ecom_QueryOwnershipBySandboxIds = nullptr;
+    decltype(&EOS_Ecom_QueryOwnershipToken) Ecom_QueryOwnershipToken = nullptr;
     decltype(&EOS_Ecom_QueryEntitlements) Ecom_QueryEntitlements = nullptr;
     decltype(&EOS_Ecom_GetEntitlementsCount) Ecom_GetEntitlementsCount = nullptr;
     decltype(&EOS_Ecom_CopyEntitlementByIndex) Ecom_CopyEntitlementByIndex = nullptr;
+    decltype(&EOS_Ecom_Entitlement_Release) Ecom_Entitlement_Release = nullptr;
 
     // Connect
     decltype(&EOS_Connect_Login) Connect_Login = nullptr;
@@ -82,9 +85,12 @@ static std::string GetDecoratedName(const char* baseName) {
     else if (strcmp(baseName, "EOS_Achievements_AddNotifyAchievementsUnlockedV2") == 0) ss << "16";
     else if (strcmp(baseName, "EOS_Achievements_AddNotifyAchievementsUnlocked") == 0) ss << "16";
     else if (strcmp(baseName, "EOS_Ecom_QueryOwnership") == 0) ss << "16";
+    else if (strcmp(baseName, "EOS_Ecom_QueryOwnershipBySandboxIds") == 0) ss << "16";
+    else if (strcmp(baseName, "EOS_Ecom_QueryOwnershipToken") == 0) ss << "16";
     else if (strcmp(baseName, "EOS_Ecom_QueryEntitlements") == 0) ss << "16";
     else if (strcmp(baseName, "EOS_Ecom_GetEntitlementsCount") == 0) ss << "8";
     else if (strcmp(baseName, "EOS_Ecom_CopyEntitlementByIndex") == 0) ss << "12";
+    else if (strcmp(baseName, "EOS_Ecom_Entitlement_Release") == 0) ss << "4";
     else if (strcmp(baseName, "EOS_Connect_Login") == 0) ss << "16";
     else if (strcmp(baseName, "EOS_Connect_GetLoggedInUserByIndex") == 0) ss << "8";
     else if (strcmp(baseName, "EOS_Connect_AddNotifyLoginStatusChanged") == 0) ss << "16";
@@ -552,6 +558,25 @@ EOS_EResult EOS_CALL Ecom_CopyEntitlementByIndex(EOS_HEcom Handle, const EOS_Eco
     return EOS_EResult::EOS_Success;
 }
 
+void EOS_CALL Ecom_Entitlement_Release(EOS_Ecom_Entitlement* Entitlement) {
+    if (Entitlement) {
+        Logger::debug("[HOOK] EOS_Ecom_Entitlement_Release: %s", Entitlement->EntitlementId);
+        delete Entitlement;
+    } else {
+        Logger::warn("[HOOK] EOS_Ecom_Entitlement_Release: null entitlement");
+    }
+}
+
+void EOS_CALL Ecom_QueryOwnershipBySandboxIds(EOS_HEcom Handle, const EOS_Ecom_QueryOwnershipBySandboxIdsOptions* Options, void* ClientData, const EOS_Ecom_OnQueryOwnershipBySandboxIdsCallback CompletionDelegate) {
+    Logger::debug("[HOOK] EOS_Ecom_QueryOwnershipBySandboxIds called");
+    Original::Ecom_QueryOwnershipBySandboxIds(Handle, Options, ClientData, CompletionDelegate);
+}
+
+void EOS_CALL Ecom_QueryOwnershipToken(EOS_HEcom Handle, const EOS_Ecom_QueryOwnershipTokenOptions* Options, void* ClientData, const EOS_Ecom_OnQueryOwnershipTokenCallback CompletionDelegate) {
+    Logger::debug("[HOOK] EOS_Ecom_QueryOwnershipToken called");
+    Original::Ecom_QueryOwnershipToken(Handle, Options, ClientData, CompletionDelegate);
+}
+
 // Connect hooks
 void EOS_CALL Connect_Login(EOS_HConnect Handle, const EOS_Connect_LoginOptions* Options, void* ClientData, const EOS_Connect_OnLoginCallback CompletionDelegate) {
     Logger::info("[HOOK] EOS_Connect_Login called");
@@ -634,9 +659,12 @@ bool InitializeHooks(HMODULE originalDLL) {
 
     Logger::info("[HOOK] Installing Ecom hooks...");
     INSTALL_HOOK(originalDLL, EOS_Ecom_QueryOwnership, Hooks::Ecom_QueryOwnership, Original::Ecom_QueryOwnership);
+    INSTALL_HOOK_OPTIONAL(originalDLL, EOS_Ecom_QueryOwnershipBySandboxIds, Hooks::Ecom_QueryOwnershipBySandboxIds, Original::Ecom_QueryOwnershipBySandboxIds);
+    INSTALL_HOOK_OPTIONAL(originalDLL, EOS_Ecom_QueryOwnershipToken, Hooks::Ecom_QueryOwnershipToken, Original::Ecom_QueryOwnershipToken);
     INSTALL_HOOK(originalDLL, EOS_Ecom_QueryEntitlements, Hooks::Ecom_QueryEntitlements, Original::Ecom_QueryEntitlements);
     INSTALL_HOOK(originalDLL, EOS_Ecom_GetEntitlementsCount, Hooks::Ecom_GetEntitlementsCount, Original::Ecom_GetEntitlementsCount);
     INSTALL_HOOK(originalDLL, EOS_Ecom_CopyEntitlementByIndex, Hooks::Ecom_CopyEntitlementByIndex, Original::Ecom_CopyEntitlementByIndex);
+    INSTALL_HOOK(originalDLL, EOS_Ecom_Entitlement_Release, Hooks::Ecom_Entitlement_Release, Original::Ecom_Entitlement_Release);
 
     Logger::info("[HOOK] Installing Connect hooks...");
     INSTALL_HOOK(originalDLL, EOS_Connect_Login, Hooks::Connect_Login, Original::Connect_Login);

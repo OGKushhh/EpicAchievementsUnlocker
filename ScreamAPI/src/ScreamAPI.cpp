@@ -9,7 +9,6 @@
 #include "PipeServer.h"
 #include "eos-sdk/eos_init.h"
 #include "eos-sdk/eos_types.h"
-#include <future>
 #include <vector>
 #include <filesystem>
 #include <string>
@@ -69,6 +68,7 @@ namespace ScreamAPI
                      Config::LogOverlay(),
                      Config::LogLevel(),
                      logPath.generic_wstring());
+        PipeServer::SetLogPath(logPath.generic_wstring());
 
         Logger::info("ScreamAPI v" SCREAM_API_VERSION);
         Logger::debug("DLL init function called");
@@ -175,7 +175,11 @@ namespace ScreamAPI
 
         if (Config::EnableOverlay()) {
             Logger::debug("Scheduling overlay initialization with platform polling");
-            static auto deferredInit = std::async(std::launch::async, [hModule]() {
+            // Use a detached thread instead of std::async: std::future blocks in its
+            // destructor until the task completes, and a static local future would block
+            // at DLL unload — after hooks are already torn down. A detached thread exits
+            // freely without blocking destroy().
+            std::thread([hModule]() {
                 const int MAX_WAIT_SECONDS = 60;
                 const int POLL_INTERVAL_MS = 1000;
                 int elapsedSeconds = 0;
@@ -202,7 +206,7 @@ namespace ScreamAPI
                 Logger::error("Timed out waiting for EOS platform after %d seconds", MAX_WAIT_SECONDS);
                 Logger::error("Achievement overlay will not be available");
                 Logger::warn("The game may not use EOS Achievements or requires manual initialization");
-            });
+            }).detach();
         }
     }
 

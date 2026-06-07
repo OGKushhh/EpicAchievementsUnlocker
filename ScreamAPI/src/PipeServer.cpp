@@ -16,6 +16,11 @@
 #include <vector>
 #include <string>
 #include <mutex>
+#include <map>
+
+// Defined in eos_ecom_entitlements.cpp — returns a thread-safe snapshot of the
+// catalog cache populated by DlcCatalog::fetch() during QueryEntitlements.
+extern std::map<std::string, std::string> GetCatalogSnapshot();
 
 namespace PipeServer {
 
@@ -23,6 +28,11 @@ static std::atomic<bool>  s_running{ false };
 static std::thread        s_thread;
 static HANDLE             s_pipe    = INVALID_HANDLE_VALUE;
 static std::mutex         s_pipeMtx;  // guards s_pipe for NotifyUnlock
+static std::wstring       s_logPath;
+
+void SetLogPath(const std::wstring& path) {
+    s_logPath = path;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -111,9 +121,52 @@ static void SendAchList(HANDLE pipe) {
     Logger::info("[PIPE] Sent %u achievements to GUI", lh.count);
 }
 
+// ── Send DLC catalog (id→title map) to newly connected client ─────────────────
+static void SendDlcCatalog(HANDLE pipe) {
+    auto catalog = GetCatalogSnapshot();
+    if (catalog.empty()) {
+        Logger::info("[PIPE] DLC catalog not yet fetched — skipping DlcCatalog packet");
+        return;
+    }
+
+    // Build string blob using the same pattern as AchList
+    std::string blob;
+    std::vector<DlcCatalogEntry> entries;
+    entries.reserve(catalog.size());
+
+    for (auto& [id, title] : catalog) {
+        DlcCatalogEntry e{};
+        e.idOff    = (uint32_t)blob.size(); blob.append(id);    blob.push_back('\0');
+        e.titleOff = (uint32_t)blob.size(); blob.append(title); blob.push_back('\0');
+        entries.push_back(e);
+    }
+
+    DlcCatalogHeader hdr{ (uint32_t)entries.size(), (uint32_t)blob.size() };
+    uint32_t payloadSize = sizeof(DlcCatalogHeader)
+                         + (uint32_t)(entries.size() * sizeof(DlcCatalogEntry))
+                         + (uint32_t)blob.size();
+
+    std::vector<uint8_t> payload(payloadSize);
+    uint8_t* p = payload.data();
+    memcpy(p, &hdr,            sizeof(hdr));                                p += sizeof(hdr);
+    memcpy(p, entries.data(),  entries.size() * sizeof(DlcCatalogEntry));   p += entries.size() * sizeof(DlcCatalogEntry);
+    memcpy(p, blob.data(),     blob.size());
+
+    SendPacket(pipe, PktType::DlcCatalog, payload.data(), payloadSize);
+    Logger::info("[PIPE] Sent DLC catalog: %u entries", hdr.count);
+}
+
 // ── Handle commands from connected client ────────────────────────────────────
 static void HandleClient(HANDLE pipe) {
+    // Send log path first so GUI can start tailing immediately
+    if (!s_logPath.empty()) {
+        LogPathPkt lpp{};
+        WideCharToMultiByte(CP_UTF8, 0, s_logPath.c_str(), -1, lpp.path, MAX_PATH - 1, nullptr, nullptr);
+        SendPacket(pipe, PktType::LogPath, &lpp, sizeof(lpp));
+        Logger::info("[PIPE] Sent log path: %S", s_logPath.c_str());
+    }
     SendAchList(pipe);
+    SendDlcCatalog(pipe);  // send catalog titles after achievement list
 
     while (s_running) {
         PktHeader hdr{};
