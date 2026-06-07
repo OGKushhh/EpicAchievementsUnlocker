@@ -1273,7 +1273,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SelectObject(hdc, g_fontSmall);
         SetTextColor(hdc, C_TEXTDIM);
         RECT vr = { 16, 28, 500, HEADER_H - 4 };
-        DrawTextW(hdc, L"ScreamAPI GUI", -1, &vr, DT_LEFT | DT_TOP | DT_SINGLELINE);
+        DrawTextW(hdc, L"Epic GUI", -1, &vr, DT_LEFT | DT_TOP | DT_SINGLELINE);
         EndPaint(hwnd, &ps); return 0;
     }
 
