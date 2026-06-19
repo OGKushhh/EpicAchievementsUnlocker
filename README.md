@@ -95,7 +95,7 @@ Press **`Shift+F5`** to toggle the overlay. Search, filter, and unlock achieveme
 > - **Double-click** an achievement in the list to unlock it (no minimize).
 
 #### Using the External GUI
-Launch `EpicAchievementUnlocker.exe` while the game is running. The GUI connects automatically and shows all achievements. Double-click any achievement to unlock it instantly.
+Launch `EpicGUI.exe` while the game is running. The GUI connects automatically and shows all achievements. Double-click any achievement to unlock it instantly.
 
 > ⚠️ The external GUI also minimizes fullscreen exclusive games when using the **Unlock Selected** button. Use double-click or switch to Borderless Windowed.
 
