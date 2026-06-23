@@ -32,43 +32,110 @@ static std::string parse_json_string(const std::string& json, size_t start){
     return result;
 }
 
-// Scans the GraphQL response JSON for all "id":"...","title":"..." pairs.
-// Epic's API consistently puts id before title within each item object.
+// Parses the GraphQL response and builds a map of item_id -> offer_title.
+//
+// Actual response structure (verified from Epic's live API):
+//   {
+//     "data": {
+//       "Catalog": {
+//         "catalogOffers": {
+//           "elements": [
+//             { "title": "DLC Name", "items": [ { "id": "catalog-item-id" } ] }
+//           ]
+//         }
+//       }
+//     }
+//   }
+//
+// This function locates the innermost "elements" array and parses its contents.
+// Uses two sequential finds instead of a single combined key so that whitespace
+// between tokens (e.g. "catalogOffers": { "elements": [) is handled correctly.
 static DlcCatalog::EntitlementMap parse_catalog_response(const std::string& json){
     DlcCatalog::EntitlementMap result;
-    size_t pos = 0;
 
+    // Step 1: find "catalogOffers"
+    auto co_pos = json.find("\"catalogOffers\"");
+    if(co_pos == std::string::npos){
+        Logger::warn("parse_catalog_response: 'catalogOffers' not found");
+        return result;
+    }
+
+    // Step 2: find "elements" after it
+    auto el_pos = json.find("\"elements\"", co_pos);
+    if(el_pos == std::string::npos){
+        Logger::warn("parse_catalog_response: 'elements' not found");
+        return result;
+    }
+
+    // Step 3: skip to the opening '[' of the array
+    auto bracket = json.find('[', el_pos);
+    if(bracket == std::string::npos){
+        Logger::warn("parse_catalog_response: elements '[' not found");
+        return result;
+    }
+    size_t pos = bracket + 1; // pos now points to first char after '['
+
+    // Parse each offer object inside the elements array
     while(pos < json.size()){
-        auto id_key = json.find("\"id\":\"", pos);
-        if(id_key == std::string::npos) break;
+        // Advance to next offer object (or end of array)
+        while(pos < json.size() && json[pos] != '{' && json[pos] != ']') pos++;
+        if(pos >= json.size() || json[pos] == ']') break;
 
-        size_t id_start = id_key + 6;
-        std::string id = parse_json_string(json, id_start);
+        // Find the extent of this offer object by tracking brace depth
+        int depth = 0;
+        size_t obj_end = pos;
+        for(size_t i = pos; i < json.size(); i++){
+            if     (json[i] == '{') depth++;
+            else if(json[i] == '}'){
+                if(--depth == 0){ obj_end = i; break; }
+            }
+        }
+        if(obj_end == pos){ pos++; continue; }
+        const std::string obj = json.substr(pos, obj_end - pos + 1);
 
-        size_t after_id = json.find('"', id_start + id.size());
-        if(after_id == std::string::npos) break;
-        after_id++;
-
-        auto title_key = json.find("\"title\":\"", after_id);
-        if(title_key == std::string::npos) break;
-
-        // Guard: if another "id":" appears before this title, it belongs to
-        // a different object. Advance to that id and try again.
-        auto next_id = json.find("\"id\":\"", after_id);
-        if(next_id != std::string::npos && next_id < title_key){
-            pos = next_id;
-            continue;
+        // Extract offer-level title (whitespace-tolerant: find key, then colon, then opening quote)
+        std::string title;
+        auto tk = obj.find("\"title\"");
+        if(tk != std::string::npos){
+            auto colon = obj.find(':', tk);
+            if(colon != std::string::npos){
+                auto quote = obj.find('"', colon + 1);
+                if(quote != std::string::npos)
+                    title = parse_json_string(obj, quote + 1);
+            }
         }
 
-        size_t title_start = title_key + 9;
-        std::string title = parse_json_string(json, title_start);
+        // Map every item.id inside "items":[...] to this offer's title
+        if(!title.empty()){
+            auto items_kw = obj.find("\"items\"");
+            if(items_kw != std::string::npos){
+                auto iopen = obj.find('[', items_kw);
+                if(iopen != std::string::npos){
+                    size_t ipos = iopen + 1;
+                    while(ipos < obj.size()){
+                        while(ipos < obj.size() && obj[ipos] != '{' && obj[ipos] != ']') ipos++;
+                        if(ipos >= obj.size() || obj[ipos] == ']') break;
 
-        if(!id.empty())
-            result[id] = title;
+                        // Find "id" key, then colon, then opening quote (whitespace-tolerant)
+                        auto ik = obj.find("\"id\"", ipos);
+                        if(ik == std::string::npos) break;
+                        auto colon = obj.find(':', ik);
+                        if(colon == std::string::npos) break;
+                        auto quote = obj.find('"', colon + 1);
+                        if(quote == std::string::npos) break;
+                        std::string item_id = parse_json_string(obj, quote + 1);
+                        if(!item_id.empty())
+                            result[item_id] = title;
 
-        pos = json.find('"', title_start + title.size());
-        if(pos == std::string::npos) break;
-        pos++;
+                        // Skip past this item object
+                        while(ipos < obj.size() && obj[ipos] != '}') ipos++;
+                        ipos++;
+                    }
+                }
+            }
+        }
+
+        pos = obj_end + 1;
     }
 
     return result;
@@ -131,8 +198,10 @@ static std::optional<std::string> https_post(
 }
 
 static std::string build_payload(const std::string& namespace_id){
+    // title lives on the OFFER (CatalogOffer), not on the nested item (CatalogItem).
+    // item.id is what EOS_Ecom_QueryOwnership returns, so that is our map key.
     return
-        R"({"query":"query($namespace: String!) { Catalog { catalogOffers(namespace: $namespace, params: { count: 1000 }) { elements { items { id title } } } } }","variables":{"namespace":")"
+        R"({"query":"query($namespace: String!) { Catalog { catalogOffers(namespace: $namespace, params: { count: 1000 }) { elements { title items { id } } } } }","variables":{"namespace":")"
         + namespace_id + R"("}})";
 }
 
@@ -151,29 +220,25 @@ std::optional<EntitlementMap> fetch(const std::string& namespace_id){
     const std::string payload = build_payload(namespace_id);
     const std::wstring user_agent = L"EpicGamesLauncher/18.9.0-45233261+++Portal+Release-Live";
 
-    struct Endpoint { std::wstring host; std::wstring path; };
-    const Endpoint endpoints[] = {
-        { L"launcher.store.epicgames.com", L"/graphql"    },
-        { L"graphql.unrealengine.com",     L"/ue/graphql" },
-    };
+    // Only the launcher.store.epicgames.com endpoint works as of June 2026.
+    // The graphql.unrealengine.com endpoint returns 410 Gone and is no longer used.
+    const std::wstring host = L"launcher.store.epicgames.com";
+    const std::wstring path = L"/graphql";
 
-    for(auto& ep : endpoints){
-        auto response = https_post(ep.host, ep.path, payload, user_agent);
-        if(!response.has_value() || response->empty()){
-            Logger::warn("DlcCatalog: endpoint failed, trying next...");
-            continue;
-        }
-        auto map = parse_catalog_response(*response);
-        if(map.empty()){
-            Logger::warn("DlcCatalog: response had no items, trying next endpoint...");
-            continue;
-        }
-        Logger::dlc("DlcCatalog: fetched %zu item(s) from Epic catalog", map.size());
-        return map;
+    auto response = https_post(host, path, payload, user_agent);
+    if(!response.has_value() || response->empty()){
+        Logger::warn("DlcCatalog: request failed for namespace '%s'", namespace_id.c_str());
+        return std::nullopt;
     }
 
-    Logger::warn("DlcCatalog: all endpoints failed for namespace '%s'", namespace_id.c_str());
-    return std::nullopt;
+    auto map = parse_catalog_response(*response);
+    if(map.empty()){
+        Logger::warn("DlcCatalog: response had no items for namespace '%s'", namespace_id.c_str());
+        return std::nullopt;
+    }
+
+    Logger::dlc("DlcCatalog: fetched %zu item(s) from Epic catalog", map.size());
+    return map;
 }
 
 } // namespace DlcCatalog
