@@ -14,6 +14,10 @@
 #include <atomic>
 #include <map>
 
+// Defined in eos_ecom_entitlements.cpp — single source of truth for the catalog.
+extern void EnsureCatalogFetched();
+extern std::map<std::string, std::string> GetCatalogSnapshot();
+
 namespace EOS_Hooks {
 
 static bool hooksInitialized = false;
@@ -362,39 +366,17 @@ static std::vector<EOS_Ecom_ItemOwnership> g_ownerships;
 static std::map<std::string, std::string> g_entitlement_map;
 static std::vector<std::string>           g_entitlement_ids;
 
-// DLC catalog cache — fetched once per session.
-static std::map<std::string, std::string> g_catalog_cache;
-static bool                               g_catalog_fetched = false;
-
 static void AutoFetchEntitlements() {
-    std::string ns = Util::g_namespace_id;
-    if (ns.empty()) {
-        ns = Config::NamespaceId();
-        if (!ns.empty())
-            Logger::debug("[HOOK] DLC auto-fetch: using NamespaceId from config: %s", ns.c_str());
-    }
-    if (ns.empty()) {
-        Logger::warn("[HOOK] DLC auto-fetch: namespace_id unavailable. "
-            "Set NamespaceId= in [ScreamAPI] if needed.");
-        return;
-    }
-    if (!g_catalog_fetched) {
-        g_catalog_fetched = true;
-        auto result = DlcCatalog::fetch(ns);
-        if (result.has_value()) {
-            g_catalog_cache = std::move(*result);
-            Logger::dlc("[HOOK] Auto-fetch: cached %zu entries", g_catalog_cache.size());
-        } else {
-            Logger::warn("[HOOK] Auto-fetch: failed to retrieve catalog from Epic's API");
-        }
-    }
-    for (auto& [id, title] : g_catalog_cache) {
+    EnsureCatalogFetched();
+    auto catalog = GetCatalogSnapshot();
+    for (auto& [id, title] : catalog) {
         if (Config::IsDlcUnlocked(id, false)) {
             Logger::debug("[HOOK]   Auto-fetch adding: %s", id.c_str());
             g_entitlement_map[id] = title;
         }
     }
 }
+
 
 static void InjectExtraEntitlements() {
     for (auto& [id, title] : Config::ExtraEntitlements()) {
@@ -420,12 +402,17 @@ static EOS_Ecom_Entitlement* MakeEntitlement(const std::string& id, const std::s
 void EOS_CALL Ecom_QueryOwnership(EOS_HEcom Handle, const EOS_Ecom_QueryOwnershipOptions* Options, void* ClientData, const EOS_Ecom_OnQueryOwnershipCallback CompletionDelegate) {
     Logger::info("[HOOK] EOS_Ecom_QueryOwnership called");
 
+    EnsureCatalogFetched();
+    auto catalog = GetCatalogSnapshot();
+
     g_ownerships.clear();
     if (Options) {
         Logger::dlc("[HOOK] Game queried ownership of %d item(s):", Options->CatalogItemIdCount);
         for (uint32_t i = 0; i < Options->CatalogItemIdCount; i++) {
             const char* id = Options->CatalogItemIds[i];
-            Logger::dlc("[HOOK]   Item ID: %s", id);
+            auto it = catalog.find(id);
+            const char* title = (it != catalog.end()) ? it->second.c_str() : "Unknown Title";
+            Logger::dlc("[HOOK]   Item ID: %s (\"%s\")", id, title);
             bool unlocked = Config::IsDlcUnlocked(std::string(id), true);
             g_ownerships.emplace_back(EOS_Ecom_ItemOwnership{
                 EOS_ECOM_ITEMOWNERSHIP_API_LATEST,
@@ -467,7 +454,10 @@ void EOS_CALL Ecom_QueryOwnership(EOS_HEcom Handle, const EOS_Ecom_QueryOwnershi
                     item->OwnershipStatus = unlocked
                         ? EOS_EOwnershipStatus::EOS_OS_Owned
                         : EOS_EOwnershipStatus::EOS_OS_NotOwned;
-                    Logger::dlc("[HOOK]   [%s] %s", unlocked ? "Owned" : "Not Owned", item->Id);
+                    auto snap = GetCatalogSnapshot();
+                    auto cit = snap.find(item->Id);
+                    const char* title = (cit != snap.end()) ? cit->second.c_str() : "Unknown Title";
+                    Logger::dlc("[HOOK]   [%s] %s (\"%s\")", unlocked ? "Owned" : "Not Owned", item->Id, title);
                 }
 
                 mData->ClientData = c->ClientData;

@@ -328,6 +328,33 @@ EOS_DECLARE_FUNC(void) EOS_Ecom_RedeemEntitlements(
 // ── Catalog snapshot for PipeServer ──────────────────────────────────────────
 // Called from PipeServer thread on GUI connect; mutex guards the cache.
 // Returns a copy so the caller doesn't need to hold the lock.
+// Called from eos_hooks.cpp (QueryOwnership path) so the catalog is populated
+// regardless of which EOS ecom function the game happens to call first.
+void EnsureCatalogFetched() {
+    if (s_catalog_fetched) return;
+
+    std::string ns = Util::g_namespace_id;
+    if (ns.empty()) {
+        ns = Config::NamespaceId();
+        if (!ns.empty())
+            Logger::debug("EnsureCatalogFetched: using NamespaceId from config: %s", ns.c_str());
+    }
+    if (ns.empty()) {
+        Logger::warn("EnsureCatalogFetched: namespace_id unavailable.");
+        return;
+    }
+
+    s_catalog_fetched = true;
+    auto result = DlcCatalog::fetch(ns);
+    if (result.has_value()) {
+        std::lock_guard<std::mutex> lk(s_cache_mutex);
+        s_catalog_cache = std::move(*result);
+        Logger::dlc("EnsureCatalogFetched: cached %zu entries", s_catalog_cache.size());
+    } else {
+        Logger::warn("EnsureCatalogFetched: failed to retrieve catalog from Epic's API");
+    }
+}
+
 std::map<std::string, std::string> GetCatalogSnapshot() {
     std::lock_guard<std::mutex> lk(s_cache_mutex);
     return s_catalog_cache;

@@ -690,38 +690,68 @@ static void RebuildLogEdit() {
 }
 
 // ── DLC log parser ────────────────────────────────────────────────────────────
+// Extracts id and optional title from a log token of the form:
+//   abc123def ("Some Title")   — new format with title appended
+//   abc123def                  — old format, bare id only
+static void SplitIdTitle(const std::wstring& token, std::wstring& id, std::wstring& title) {
+    auto paren = token.find(L" (\"");
+    if (paren != std::wstring::npos) {
+        id = token.substr(0, paren);
+        auto tstart = paren + 3;
+        auto tend   = token.rfind(L"\")");
+        title = (tend != std::wstring::npos && tend > tstart)
+              ? token.substr(tstart, tend - tstart)
+              : L"";
+    } else {
+        id    = token;
+        title = L"";
+    }
+    while (!id.empty() && (id.back() == L'\r' || id.back() == L'\n' || id.back() == L' '))
+        id.pop_back();
+}
+
 static void ParseDlcLine(const std::wstring& line) {
-    // "Item ID: <id>" — game queried this DLC
+    // "Item ID: <id>" or "Item ID: <id> ("Title")" — game queried this DLC
     auto pos = line.find(L"Item ID: ");
     if (pos != std::wstring::npos) {
-        std::wstring id = line.substr(pos + 9);
-        while (!id.empty() && (id.back() == L'\r' || id.back() == L'\n' || id.back() == L' '))
-            id.pop_back();
+        std::wstring token = line.substr(pos + 9);
+        while (!token.empty() && (token.back() == L'\r' || token.back() == L'\n' || token.back() == L' '))
+            token.pop_back();
+        std::wstring id, title;
+        SplitIdTitle(token, id, title);
         if (!id.empty()) {
             if (g_dlcIndex.find(id) == g_dlcIndex.end()) {
                 g_dlcIndex[id] = (int)g_dlcItems.size();
                 g_dlcItems.push_back({ id });
             }
-            g_dlcItems[g_dlcIndex[id]].timesQueried++;
+            auto& d = g_dlcItems[g_dlcIndex[id]];
+            d.timesQueried++;
+            // Cache title from log as fallback if catalog packet hasn't arrived yet
+            if (!title.empty() && g_dlcTitles.find(id) == g_dlcTitles.end())
+                g_dlcTitles[id] = title;
         }
         return;
     }
 
-    // "[Owned] <id>" / "[Not Owned] <id>" — DLL ownership response
+    // "[Owned] <id>" or "[Owned] <id> ("Title")" — DLL ownership response
     bool owned    = line.find(L"[Owned] ")     != std::wstring::npos;
     bool notOwned = line.find(L"[Not Owned] ") != std::wstring::npos;
     if (owned || notOwned) {
         size_t start = line.find(owned ? L"[Owned] " : L"[Not Owned] ");
         if (start != std::wstring::npos) {
             start += owned ? 8u : 12u;
-            std::wstring id = line.substr(start);
-            while (!id.empty() && (id.back() == L'\r' || id.back() == L'\n' || id.back() == L' '))
-                id.pop_back();
+            std::wstring token = line.substr(start);
+            while (!token.empty() && (token.back() == L'\r' || token.back() == L'\n' || token.back() == L' '))
+                token.pop_back();
+            std::wstring id, title;
+            SplitIdTitle(token, id, title);
             auto it = g_dlcIndex.find(id);
             if (it != g_dlcIndex.end()) {
                 auto& d = g_dlcItems[it->second];
                 d.currentOwned = owned;
                 if (owned) d.timesOwned++;
+                if (!title.empty() && g_dlcTitles.find(id) == g_dlcTitles.end())
+                    g_dlcTitles[id] = title;
             }
         }
         return;
