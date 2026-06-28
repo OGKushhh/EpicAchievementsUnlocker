@@ -1,0 +1,49 @@
+name: Build ScreamAPI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Build ScreamAPI x64
+      run: |
+        msbuild ScreamAPI.sln /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m
+
+    - name: Build ScreamAPI x86
+      run: |
+        msbuild ScreamAPI.sln /t:Rebuild /p:Configuration=Release /p:Platform=x86 /p:PlatformToolset=v143 /m
+
+    - name: Build EpicGUI x64
+      run: |
+        msbuild EpicGUI/EpicGUI.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m
+
+    - name: Upload ScreamAPI x64
+      uses: actions/upload-artifact@v4
+      with:
+        name: ScreamAPI-x64
+        path: ScreamAPI/build/x64/Release/EOSSDK-Win64-Shipping.dll
+
+    - name: Upload ScreamAPI x86
+      uses: actions/upload-artifact@v4
+      with:
+        name: ScreamAPI-x86
+        path: ScreamAPI/build/Win32/Release/EOSSDK-Win32-Shipping.dll
+
+    - name: Upload EpicGUI
+      uses: actions/upload-artifact@v4
+      with:
+        name: EpicGUI
+        path: bin/Release/EpicGUI.exe

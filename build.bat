@@ -47,8 +47,8 @@ pause & exit /b 1
 :CHECK_REBUILD_SLN
 :: Sets MSBUILD_TARGET=Rebuild if output folder exists, else Build
 :: %1 = platform (x64 or x86), sets TARGET_FLAG
-set "OUT_DIR=x64\Release"
-if "%~1"=="x86" set "OUT_DIR=Win32\Release"
+set "OUT_DIR=ScreamAPI\build\x64\Release"
+if "%~1"=="x86" set "OUT_DIR=ScreamAPI\build\Win32\Release"
 set "TARGET_FLAG=/t:Build"
 if exist "%OUT_DIR%\" (
     echo  [INFO] Output folder "%OUT_DIR%" exists - using Rebuild
@@ -60,7 +60,7 @@ goto :eof
 
 :CHECK_REBUILD_GUI
 set "TARGET_FLAG=/t:Build"
-if exist "EpicGUI\x64\Release\" (
+if exist "bin\Release\" (
     echo  [INFO] Output folder "EpicGUI\x64\Release" exists - using Rebuild
     set "TARGET_FLAG=/t:Rebuild"
 ) else (
