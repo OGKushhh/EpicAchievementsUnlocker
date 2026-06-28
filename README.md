@@ -21,6 +21,8 @@
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue" alt="C++">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey" alt="Platform">
+  <img src="https://img.shields.io/github/downloads/OGKushhh/EpicAchievementsUnlocker/total?label=downloads&color=brightgreen" alt="Total Downloads">
+  <img src="https://img.shields.io/github/downloads/OGKushhh/EpicAchievementsUnlocker/latest/total?label=downloads%40latest&color=brightgreen" alt="Latest Release Downloads">
 </p>
 
 ---
