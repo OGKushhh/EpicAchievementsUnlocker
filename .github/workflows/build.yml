@@ -26,12 +26,6 @@ jobs:
       run: |
         msbuild EpicGUI/EpicGUI.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m
 
-    - name: Find EpicGUI output
-      run: |
-        Write-Host "Searching for EpicGUI.exe..."
-        Get-ChildItem -Recurse -Filter "EpicGUI.exe" | Select-Object FullName
-      shell: pwsh
-
     - name: Upload ScreamAPI x64
       uses: actions/upload-artifact@v4
       with:
@@ -48,4 +42,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: EpicGUI
-        path: bin/Release/EpicGUI.exe
+        path: EpicGUI/bin/Release/EpicGUI.exe

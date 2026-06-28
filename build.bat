@@ -60,7 +60,7 @@ goto :eof
 
 :CHECK_REBUILD_GUI
 set "TARGET_FLAG=/t:Build"
-if exist "bin\Release\" (
+if exist "EpicGUI\bin\Release\" (
     echo  [INFO] Output folder "EpicGUI\x64\Release" exists - using Rebuild
     set "TARGET_FLAG=/t:Rebuild"
 ) else (
